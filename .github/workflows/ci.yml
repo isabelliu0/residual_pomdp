@@ -1,6 +1,6 @@
 name: CI Checks
 
-on: [push, pull_request]
+on: [push]
 
 jobs:
   autoformat:
@@ -10,12 +10,9 @@ jobs:
       - name: Run black to test code formatting
         uses: psf/black@stable
         with:
-          options: "--check --verbose --line-length 100"
-          src: "./src ./experiments ./tests"
+          options: "--check --verbose"
       - name: Run isort to check import organization
         uses: isort/isort-action@master
-        with:
-          configuration: "--check-only --profile black"
 
   linting:
     runs-on: ubuntu-latest
@@ -24,18 +21,18 @@ jobs:
         python-version: ["3.11"]
     steps:
     - uses: actions/checkout@v4
-    - name: Install uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: true
-        cache-dependency-glob: "pyproject.toml"
     - name: Set up Python ${{ matrix.python-version }}
-      run: uv python install ${{ matrix.python-version }}
-    - name: Install the project
-      run: uv sync --all-extras --dev
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: '**/pyproject.toml'
+    - name: Install dependencies
+      run: |
+        pip install -e ".[develop]"
     - name: Lint with pylint
       run: |
-        uv run pylint src/residual_controllers
+        pytest . --pylint -m pylint --pylint-rcfile=.pylintrc
 
   static-type-checking:
     runs-on: ubuntu-latest
@@ -44,18 +41,18 @@ jobs:
         python-version: ["3.11"]
     steps:
     - uses: actions/checkout@v4
-    - name: Install uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: true
-        cache-dependency-glob: "pyproject.toml"
     - name: Set up Python ${{ matrix.python-version }}
-      run: uv python install ${{ matrix.python-version }}
-    - name: Install the project
-      run: uv sync --all-extras --dev
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: '**/pyproject.toml'
+    - name: Install dependencies
+      run: |
+        pip install -e ".[develop]"
     - name: Type check with mypy
       run: |
-        uv run mypy src/
+        mypy .
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -64,15 +61,15 @@ jobs:
         python-version: ["3.11"]
     steps:
     - uses: actions/checkout@v4
-    - name: Install uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: true
-        cache-dependency-glob: "pyproject.toml"
     - name: Set up Python ${{ matrix.python-version }}
-      run: uv python install ${{ matrix.python-version }}
-    - name: Install the project
-      run: uv sync --all-extras --dev
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: '**/pyproject.toml'
+    - name: Install dependencies
+      run: |
+        pip install -e ".[develop]"
     - name: Run pytest
       run: |
-        uv run pytest tests/ -v
+        pytest tests/
