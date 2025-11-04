@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "residual_controllers"
+version = "0.1.0"
+description = "Residual RL for improving controllers in POMDPs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy==1.24.4",
+    "matplotlib",
+    "gymnasium>=0.29.1",
+    "stable_baselines3>=2.3.2",
+    "torch>=2.0.0",
+    "pybullet>=3.2.6",
+    "pymdptoolbox>=4.0b3",
+    "pyyaml>=6.0.2",
+    "pexpect",
+    "tabulate>=0.9.0",
+    "tensorboard>=2.18.0",
+    "tampura@git+https://github.com/aidan-curtis/tampura.git",
+    "tampura_environments@git+https://github.com/aidan-curtis/tampura_environments.git",
+]
+
+[project.optional-dependencies]
+develop = [
+    "black",
+    "docformatter",
+    "isort",
+    "mypy",
+    "pylint>=2.14.5",
+    "pytest-pylint>=0.18.0",
+    "pytest>=7.2.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+residual_controllers = ["py.typed"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.isort]
+py_version = 311
+profile = "black"
+multi_line_output = 2
+skip_glob = ["venv/*"]
+split_on_trailing_comma = true
+
+[tool.mypy]
+strict_equality = true
+disallow_untyped_calls = true
+warn_unreachable = true
+exclude = ["venv/*", "experiments/*"]
+
+[[tool.mypy.overrides]]
+module = [
+    "matplotlib.*",
+    "gymnasium.*",
+    "stable_baselines3.*",
+    "tampura.*",
+    "tampura_environments.*",
+]
+ignore_missing_imports = true
