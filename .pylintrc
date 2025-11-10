@@ -7,10 +7,10 @@ extension-pkg-whitelist=numpy,pybullet
 
 # Add files or directories to the blacklist. They should be base names, not
 # paths.
-ignore=CVS,venv,.venv
+ignore=CVS,venv,.venv,third_party
 
 # Add paths to the blacklist.
-ignore-paths=
+ignore-paths=third_party/.*
 
 # Add files or directories matching the regex patterns to the blacklist. The
 # regex matches against base names, not paths.
