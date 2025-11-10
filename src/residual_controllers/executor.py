@@ -6,22 +6,25 @@ import copy
 from typing import Any, Callable
 
 import numpy as np
-from tampura.structs import Action, AliasStore
-from tampura.symbolic import Atom, Not, OneOf
-from tampura_environments.slam_collect.env import generate_trajectory
 
-from residual_controllers.planner import get_base_action_name
+
+def get_base_action_name(action_name: str) -> str:
+    """Extract base action name (placeholder for environment-specific
+    logic)."""
+    # NOTE: This should be implemented based on action naming convention
+    return action_name.split("_")[0] if "_" in action_name else action_name
 
 
 def execute_action_sequence(
-    symbolic_action: Action,
+    symbolic_action: Any,
     belief: Any,
-    store: AliasStore,
+    store: Any,
     spec: Any,
-    base_controller: Callable[[Action, Any, AliasStore], list],
+    base_controller: Callable[[Any, Any, Any], list],
     residual_policy: Any | None = None,
     target_skill: str | None = None,
     belief_encoder: Callable[[Any], np.ndarray] | None = None,
+    generate_trajectory_fn: Callable | None = None,
 ) -> tuple[Any, list[int], np.ndarray | None]:
     """Execute a symbolic action by getting primitives and stepping through
     simulation.
@@ -65,7 +68,12 @@ def execute_action_sequence(
         primitive_actions = modified_primitives
 
     # Execute primitives on all particles
-    trajectories, _ = generate_trajectory(belief.particles, primitive_actions, std=0.04)
+    if generate_trajectory_fn is None:
+        raise ValueError("generate_trajectory_fn must be provided")
+
+    trajectories, _ = generate_trajectory_fn(
+        belief.particles, primitive_actions, std=0.04
+    )
     next_belief = _create_belief_from_trajectories(belief, trajectories)
     action_schema = spec.get_action_schema(action_base_name)
     satisfied_veffects = _check_verified_effects(next_belief, action_schema, store)
@@ -74,10 +82,13 @@ def execute_action_sequence(
 
 
 def _add_residual_to_primitive(primitive: Any, residual: np.ndarray) -> Any:
-    """Add residual correction to a primitive action."""
+    """Add residual correction to a primitive action.
+
+    Environment-specific implementation needed.
+    Example: For actions with dx, dy attributes, add residual[0] and residual[1]
+    """
     modified = copy.deepcopy(primitive)
 
-    # For SLAM2D, primitives are SlamAction(dx, dy, attach, detach)
     if hasattr(modified, "dx") and hasattr(modified, "dy"):
         if len(residual) >= 2:
             modified.dx += float(residual[0])
@@ -97,10 +108,11 @@ def _create_belief_from_trajectories(
     return next_belief
 
 
-def _check_verified_effects(
-    belief: Any, action_schema: Any, store: AliasStore
-) -> list[int]:
-    """Check which verified effects are satisfied in the resulting belief."""
+def _check_verified_effects(belief: Any, action_schema: Any, store: Any) -> list[int]:
+    """Check which verified effects are satisfied in the resulting belief.
+
+    NOTE: Environment-specific implementation needed based on belief and effect types.
+    """
     if (
         not hasattr(action_schema, "verify_effects")
         or len(action_schema.verify_effects) == 0
@@ -118,13 +130,18 @@ def _check_verified_effects(
 
 
 def _check_single_effect(effect: Any, abstract_items: set) -> int:
-    """Check if a single verify_effect is satisfied."""
-    if isinstance(effect, Atom):
+    """Check if a single verify_effect is satisfied.
+
+    Environment-specific implementation based on your effect types.
+    """
+    # Check for Atom type (duck typing to avoid import)
+    if hasattr(effect, "pred_name"):
         return 1 if effect in abstract_items else 0
-    if isinstance(effect, Not):
+    # Check for Not type
+    if hasattr(effect, "component"):
         return 1 if effect.component not in abstract_items else 0
-    if isinstance(effect, OneOf):
-        # For OneOf, return the index of the satisfied component
+    # Check for OneOf type
+    if hasattr(effect, "components"):
         for idx, component in enumerate(effect.components):
             if _check_single_effect(component, abstract_items) == 1:
                 return idx

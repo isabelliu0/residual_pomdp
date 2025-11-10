@@ -14,14 +14,9 @@ dependencies = [
     "gymnasium>=0.29.1",
     "stable_baselines3>=2.3.2",
     "torch>=2.0.0",
-    "pybullet>=3.2.6",
-    "pymdptoolbox>=4.0b3",
     "pyyaml>=6.0.2",
-    "pexpect",
     "tabulate>=0.9.0",
     "tensorboard>=2.18.0",
-    "tampura@git+https://github.com/aidan-curtis/tampura.git",
-    "tampura_environments@git+https://github.com/aidan-curtis/tampura_environments.git",
 ]
 
 [project.optional-dependencies]
@@ -63,7 +58,5 @@ module = [
     "matplotlib.*",
     "gymnasium.*",
     "stable_baselines3.*",
-    "tampura.*",
-    "tampura_environments.*",
 ]
 ignore_missing_imports = true
