@@ -117,12 +117,14 @@ class ResidualPolicy:
         reward_arr = np.array([reward], dtype=np.float32)
         next_obs_arr = np.asarray(next_obs, dtype=np.float32).reshape(1, -1)
         done_arr = np.array([done], dtype=np.float32)
+        assert self.model.replay_buffer is not None
         self.model.replay_buffer.add(
             obs_arr, next_obs_arr, action_arr, reward_arr, done_arr, [{}]
         )
 
     def buffer_size(self) -> int:
         """Get current replay buffer size."""
+        assert self.model.replay_buffer is not None
         return self.model.replay_buffer.size()
 
     def save(self, filepath: str):
