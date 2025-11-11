@@ -36,10 +36,13 @@ def test_visualization_with_controller():
 def test_visualization_full_episode():
     """Test visualization of Cover2DEnv for a full episode."""
     # Uncomment to enable visualization
+    # from pathlib import Path
+
     # import matplotlib.pyplot as plt
+    # from matplotlib.animation import FFMpegWriter
 
     config = Cover2DConfig(
-        seed=47,
+        seed=0,
         num_particles=10,
         transition_noise_std=0.2,
         observation_noise_std=0.05,
@@ -54,6 +57,16 @@ def test_visualization_full_episode():
         target_y=env.world.config.goal_region_y + 0.5,
     )
 
+    # video_path = Path(f"videos/cover2d_test_seed{config.seed}.mp4")
+    # video_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # fig, ax = plt.subplots(figsize=(10, 6))
+    # writer = FFMpegWriter(fps=10)
+    # writer.setup(fig, str(video_path), dpi=100)
+
+    # env.render(ax=ax, show_belief=True)
+    # writer.grab_frame()
+
     for _ in range(50):
         mean_state = get_mean_state(belief)
         if not mean_state.gripper_state.is_holding:
@@ -62,11 +75,12 @@ def test_visualization_full_episode():
             action = place_controller.get_action(belief)
 
         belief, _, terminal, _ = env.step(action)
-        # ax = env.render(show_belief=True)
-        # plt.pause(0.5)
+        # env.render(ax=ax, show_belief=True)
+        # writer.grab_frame()
+
         if terminal:
             break
 
-    # ax = env.render(show_belief=True)
-    # assert ax is not None
-    # plt.close()
+    # writer.finish()
+    # plt.close(fig)
+    # print(f"Video saved to {video_path}")

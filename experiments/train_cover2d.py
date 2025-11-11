@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+from matplotlib.animation import FFMpegWriter
+
 from residual_controllers.envs.cover2d import (
     Cover2DConfig,
     Cover2DEnv,
@@ -24,6 +27,8 @@ def train_place_controller_residual(
     num_episodes: int = 100,
     max_steps_per_episode: int = 100,
     save_dir: str = "trained_models",
+    video_dir: str = "videos",
+    video_freq: int = 10,
     seed: int = 0,
 ) -> None:
     """Train residual RL policy for PlaceController on Cover2DEnv."""
@@ -68,6 +73,8 @@ def train_place_controller_residual(
 
     total_steps = 0
     success_count = 0
+    video_path = Path(video_dir)
+    video_path.mkdir(parents=True, exist_ok=True)
 
     for episode in range(num_episodes):
         env = Cover2DEnv(config)
@@ -89,6 +96,15 @@ def train_place_controller_residual(
 
         placement_trajectory = []
 
+        record_video = episode % video_freq == 0
+        if record_video:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            writer = FFMpegWriter(fps=10)
+            video_file = video_path / f"episode_{episode:04d}.mp4"
+            writer.setup(fig, str(video_file), dpi=100)
+            env.render(ax=ax, show_belief=True)
+            writer.grab_frame()
+
         for step in range(max_steps_per_episode):
             mean_state = get_mean_state(belief)
 
@@ -98,6 +114,10 @@ def train_place_controller_residual(
                 episode_reward += reward
                 episode_steps += 1
                 total_steps += 1
+
+                if record_video:
+                    env.render(ax=ax, show_belief=True)
+                    writer.grab_frame()
 
                 mean_state = get_mean_state(belief)
                 if mean_state.gripper_state.is_holding:
@@ -111,6 +131,10 @@ def train_place_controller_residual(
                 action = action_from_residual(base_action, residual)
 
                 belief, reward, terminal, _ = env.step(action)
+
+                if record_video:
+                    env.render(ax=ax, show_belief=True)
+                    writer.grab_frame()
 
                 placement_trajectory.append(
                     {
@@ -152,6 +176,11 @@ def train_place_controller_residual(
 
                 if trainer.should_train():
                     _ = trainer.train_step()
+
+        if record_video:
+            writer.finish()
+            plt.close(fig)
+            print(f"  Video saved to {video_file}")
 
         stats = trainer.get_training_stats()
         success_rate = success_count / (episode + 1)

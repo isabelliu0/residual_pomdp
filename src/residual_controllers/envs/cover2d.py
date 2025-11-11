@@ -134,7 +134,7 @@ class Cover2DConfig:
     observation_noise_std: float = 0.05
     num_particles: int = 10
     initial_robot_x: float = 2.0
-    initial_robot_y: float = 5.0
+    initial_robot_y: float = 3.5
     initial_robot_theta: float = 0.0
     initial_block_x: float = 2.0
     initial_block_y: float = 2.0
