@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0.2",
     "tabulate>=0.9.0",
     "tensorboard>=2.18.0",
+    "tomsgeoms2d@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=toms-geoms-2d",
 ]
 
 [project.optional-dependencies]
@@ -61,5 +62,6 @@ module = [
     "matplotlib.*",
     "gymnasium.*",
     "stable_baselines3.*",
+    "tomsgeoms2d.*",
 ]
 ignore_missing_imports = true
