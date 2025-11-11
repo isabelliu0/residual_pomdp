@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -32,8 +33,12 @@ def train_place_controller_residual(
     seed: int = 0,
 ) -> None:
     """Train residual RL policy for PlaceController on Cover2DEnv."""
-    save_path = Path(save_dir)
+    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = Path(save_dir) / run_name
     save_path.mkdir(parents=True, exist_ok=True)
+
+    video_path = Path(video_dir) / run_name
+    video_path.mkdir(parents=True, exist_ok=True)
 
     config = Cover2DConfig(
         seed=seed,
@@ -66,15 +71,15 @@ def train_place_controller_residual(
     )
 
     print("Training residual RL for PlaceController on Cover2D")
+    print(f"Run name: {run_name}")
     print(f"Episodes: {num_episodes}, Max steps: {max_steps_per_episode}")
     print(f"Observation dim: {observation_dim}, Action dim: {action_dim}")
     print(f"Save directory: {save_path}")
+    print(f"Video directory: {video_path}")
     print("-" * 60)
 
     total_steps = 0
     success_count = 0
-    video_path = Path(video_dir)
-    video_path.mkdir(parents=True, exist_ok=True)
 
     for episode in range(num_episodes):
         env = Cover2DEnv(config)
