@@ -7,6 +7,7 @@ from residual_controllers.envs.cover2d import (
     GripperAction,
     PickController,
     PlaceController,
+    get_mean_state,
 )
 
 
@@ -44,12 +45,10 @@ def test_visualization_full_episode():
     # import matplotlib.pyplot as plt
 
     config = Cover2DConfig(
-        seed=42,
+        seed=47,
         num_particles=10,
-        initial_robot_x=2.0,
-        initial_robot_y=3.0,
-        initial_block_x=2.5,
-        initial_block_y=3.0,
+        transition_noise_std=0.2,
+        observation_noise_std=0.05,
     )
     env = Cover2DEnv(config)
     belief, _ = env.reset()
@@ -61,13 +60,15 @@ def test_visualization_full_episode():
         target_y=env.world.config.goal_region_y + 0.5,
     )
 
-    for _ in range(50):
-        if not env.state.gripper_state.is_holding:
+    for step in range(50):
+        mean_state = get_mean_state(belief)
+        if not mean_state.gripper_state.is_holding:
             action = pick_controller.get_action(belief)
         else:
             action = place_controller.get_action(belief)
 
         if action is None:
+            print(f"Step {step}: Controller returned None, breaking")
             break
 
         belief, _, terminal, _ = env.step(action)
