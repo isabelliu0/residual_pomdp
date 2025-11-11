@@ -1,10 +1,8 @@
 """Tests for Cover2DEnv visualization."""
 
 from residual_controllers.envs.cover2d import (
-    Action,
     Cover2DConfig,
     Cover2DEnv,
-    GripperAction,
     PickController,
     PlaceController,
     get_mean_state,

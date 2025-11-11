@@ -36,9 +36,10 @@ ENV/
 .ipynb_checkpoints
 
 # Experiment outputs
-experiments/runs/
-experiments/logs/
-experiments/models/
+runs/
+logs/
+trained_models/
+videos/
 *.pkl
 *.pt
 *.pth

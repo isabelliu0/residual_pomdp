@@ -290,9 +290,11 @@ class World:
         half_size = self.block_size / 2
         return (
             self.config.goal_region_x <= x - half_size
-            and x + half_size <= self.config.goal_region_x + self.config.goal_region_width
+            and x + half_size
+            <= self.config.goal_region_x + self.config.goal_region_width
             and self.config.goal_region_y <= y - half_size
-            and y + half_size <= self.config.goal_region_y + self.config.goal_region_height
+            and y + half_size
+            <= self.config.goal_region_y + self.config.goal_region_height
         )
 
     def check_robot_collision(self, x: float, y: float) -> bool:
@@ -528,8 +530,8 @@ def resample_belief(particles: list[State], weights: np.ndarray) -> Belief:
 def get_mean_state(belief: Belief) -> State:
     """Compute mean state from belief particles and weights.
 
-    Uses weighted average for robot pose and object poses.
-    Uses best particle for discrete gripper state.
+    Uses weighted average for robot pose and object poses. Uses best
+    particle for discrete gripper state.
     """
     x_mean = np.average(
         [p.robot_pose.x for p in belief.particles], weights=belief.weights
@@ -550,12 +552,20 @@ def get_mean_state(belief: Belief) -> State:
     if belief.particles[0].object_poses:
         for obj_id in belief.particles[0].object_poses.keys():
             obj_x_mean = np.average(
-                [p.object_poses[obj_id].x for p in belief.particles if obj_id in p.object_poses],
-                weights=belief.weights
+                [
+                    p.object_poses[obj_id].x
+                    for p in belief.particles
+                    if obj_id in p.object_poses
+                ],
+                weights=belief.weights,
             )
             obj_y_mean = np.average(
-                [p.object_poses[obj_id].y for p in belief.particles if obj_id in p.object_poses],
-                weights=belief.weights
+                [
+                    p.object_poses[obj_id].y
+                    for p in belief.particles
+                    if obj_id in p.object_poses
+                ],
+                weights=belief.weights,
             )
             mean_object_poses[obj_id] = ObjectPose(
                 object_id=obj_id, x=float(obj_x_mean), y=float(obj_y_mean)
@@ -661,7 +671,9 @@ class PlaceController:
         dtheta = target_theta - robot_theta
         dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
 
-        return Action(dx=dx, dy=dy, dtheta=dtheta * 0.5, gripper_action=GripperAction.NOOP)
+        return Action(
+            dx=dx, dy=dy, dtheta=dtheta * 0.5, gripper_action=GripperAction.NOOP
+        )
 
 
 class Cover2DEnv:
