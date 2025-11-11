@@ -24,10 +24,6 @@ def test_visualization_with_controller():
 
     for _ in range(5):
         action = pick_controller.get_action(belief)
-        if action is None:
-            action = Action(
-                dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP
-            )
         belief, _, terminal, _ = env.step(action)
         # ax = env.render(show_belief=True)
         # plt.pause(0.5)
@@ -60,16 +56,12 @@ def test_visualization_full_episode():
         target_y=env.world.config.goal_region_y + 0.5,
     )
 
-    for step in range(50):
+    for _ in range(50):
         mean_state = get_mean_state(belief)
         if not mean_state.gripper_state.is_holding:
             action = pick_controller.get_action(belief)
         else:
             action = place_controller.get_action(belief)
-
-        if action is None:
-            print(f"Step {step}: Controller returned None, breaking")
-            break
 
         belief, _, terminal, _ = env.step(action)
         # ax = env.render(show_belief=True)

@@ -575,17 +575,15 @@ class PickController:
         self.world = world
         self.target_object_id = target_object_id
 
-    def get_action(self, belief: Belief) -> Action | None:
+    def get_action(self, belief: Belief) -> Action:
         """Get action to pick the target object."""
         mean_state = get_mean_state(belief)
 
         if mean_state.gripper_state.is_holding:
-            print("PickController returning None: already holding an object")
-            return None
+            return Action(dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP)
 
         if self.target_object_id not in mean_state.object_poses:
-            print("PickController returning None: target object not found")
-            return None
+            return Action(dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP)
 
         target_obj = mean_state.object_poses[self.target_object_id]
         robot_x = mean_state.robot_pose.x
@@ -628,13 +626,12 @@ class PlaceController:
         self.target_x = target_x
         self.target_y = target_y
 
-    def get_action(self, belief: Belief) -> Action | None:
+    def get_action(self, belief: Belief) -> Action:
         """Get action to place the held object at target location."""
         mean_state = get_mean_state(belief)
 
         if not mean_state.gripper_state.is_holding:
-            print("PlaceController returning None: not holding any object")
-            return None
+            return Action(dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP)
 
         robot_x = mean_state.robot_pose.x
         robot_y = mean_state.robot_pose.y
