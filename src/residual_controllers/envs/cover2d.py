@@ -88,6 +88,7 @@ class Observation:
     """Observation of the environment."""
 
     robot_pose: Pose2D | None
+    gripper_state: GripperState
 
 
 @dataclass
@@ -129,11 +130,11 @@ class Cover2DConfig:
     goal_region_height: float = 0.8
     robot_radius: float = 0.3
     block_size: float = 0.3
-    transition_noise_std: float = 0.15
+    transition_noise_std: float = 0.2
     observation_noise_std: float = 0.05
     num_particles: int = 10
     initial_robot_x: float = 2.0
-    initial_robot_y: float = 5.0
+    initial_robot_y: float = 3.5
     initial_robot_theta: float = 0.0
     initial_block_x: float = 2.0
     initial_block_y: float = 2.0
@@ -285,13 +286,14 @@ class World:
         return x >= self.config.covered_boundary_x
 
     def in_goal_region(self, x: float, y: float) -> bool:
-        """Check if (x, y) is in the goal region."""
+        """Check if block centered at (x, y) is entirely in the goal region."""
+        half_size = self.block_size / 2
         return (
-            self.config.goal_region_x
-            <= x
+            self.config.goal_region_x <= x - half_size
+            and x + half_size
             <= self.config.goal_region_x + self.config.goal_region_width
-            and self.config.goal_region_y
-            <= y
+            and self.config.goal_region_y <= y - half_size
+            and y + half_size
             <= self.config.goal_region_y + self.config.goal_region_height
         )
 
@@ -333,7 +335,7 @@ class World:
         """Check if the robot can grasp the block at given positions."""
         gripper_x, gripper_y = self.get_gripper_center(robot_x, robot_y, robot_theta)
         dist = self.distance(gripper_x, gripper_y, block_x, block_y)
-        grasp_threshold = self.block_size / 2 + 0.2  # margin to be adjusted
+        grasp_threshold = self.block_size / 2 + 0.2  # to be adjusted
         return dist <= grasp_threshold
 
 
@@ -342,14 +344,19 @@ def apply_action(state: State, action: Action, world: World) -> State:
     new_x = state.robot_pose.x + action.dx
     new_y = state.robot_pose.y + action.dy
     new_theta = state.robot_pose.theta + action.dtheta
+    new_theta = np.arctan2(np.sin(new_theta), np.cos(new_theta))
 
     finger_width = world.robot_radius * 1.0
-    max_gripper_extent = world.robot_radius + finger_width
+    if state.gripper_state.is_holding:
+        object_offset = world.robot_radius + finger_width * 0.8
+        max_extent = object_offset + world.block_size / 2
+    else:
+        max_extent = world.robot_radius + finger_width
 
-    min_x = max_gripper_extent
-    max_x = world.config.world_width - max_gripper_extent
-    min_y = max_gripper_extent
-    max_y = world.config.world_height - max_gripper_extent
+    min_x = max_extent
+    max_x = world.config.world_width - max_extent
+    min_y = max_extent
+    max_y = world.config.world_height - max_extent
 
     new_x = np.clip(new_x, min_x, max_x)
     new_y = np.clip(new_y, min_y, max_y)
@@ -401,12 +408,12 @@ def sample_next_state(
     return apply_action(state, noisy_action, world)
 
 
-def get_observation(  #
+def get_observation(
     state: State, world: World, rng: np.random.Generator
 ) -> Observation:
     """Get observation from state with noise."""
     if world.in_covered_region(state.robot_pose.x):
-        return Observation(robot_pose=None)
+        return Observation(robot_pose=None, gripper_state=state.gripper_state)
 
     noise_x = rng.normal(0, world.config.observation_noise_std)
     noise_y = rng.normal(0, world.config.observation_noise_std)
@@ -418,7 +425,7 @@ def get_observation(  #
         theta=state.robot_pose.theta + noise_theta,
     )
 
-    return Observation(robot_pose=observed_pose)
+    return Observation(robot_pose=observed_pose, gripper_state=state.gripper_state)
 
 
 def create_initial_belief(
@@ -479,6 +486,10 @@ def observation_likelihood(
     likelihood = np.exp(
         -0.5 * ((dx / std) ** 2 + (dy / std) ** 2 + (dtheta / std) ** 2)
     )
+
+    if state.gripper_state.is_holding != observation.gripper_state.is_holding:
+        likelihood *= 0.01
+
     return likelihood
 
 
@@ -517,7 +528,11 @@ def resample_belief(particles: list[State], weights: np.ndarray) -> Belief:
 
 
 def get_mean_state(belief: Belief) -> State:
-    """Compute mean state from belief particles and weights."""
+    """Compute mean state from belief particles and weights.
+
+    Uses weighted average for robot pose and object poses. Uses best
+    particle for discrete gripper state.
+    """
     x_mean = np.average(
         [p.robot_pose.x for p in belief.particles], weights=belief.weights
     )
@@ -530,11 +545,36 @@ def get_mean_state(belief: Belief) -> State:
 
     mean_robot_pose = Pose2D(x=float(x_mean), y=float(y_mean), theta=float(theta_mean))
 
-    first_particle = belief.particles[0]
+    best_particle_idx = np.argmax(belief.weights)
+    best_particle = belief.particles[best_particle_idx]
+
+    mean_object_poses = {}
+    if belief.particles[0].object_poses:
+        for obj_id in belief.particles[0].object_poses.keys():
+            obj_x_mean = np.average(
+                [
+                    p.object_poses[obj_id].x
+                    for p in belief.particles
+                    if obj_id in p.object_poses
+                ],
+                weights=belief.weights,
+            )
+            obj_y_mean = np.average(
+                [
+                    p.object_poses[obj_id].y
+                    for p in belief.particles
+                    if obj_id in p.object_poses
+                ],
+                weights=belief.weights,
+            )
+            mean_object_poses[obj_id] = ObjectPose(
+                object_id=obj_id, x=float(obj_x_mean), y=float(obj_y_mean)
+            )
+
     return State(
         robot_pose=mean_robot_pose,
-        gripper_state=first_particle.gripper_state,
-        object_poses=dict(first_particle.object_poses),
+        gripper_state=best_particle.gripper_state,
+        object_poses=mean_object_poses,
     )
 
 
@@ -545,15 +585,15 @@ class PickController:
         self.world = world
         self.target_object_id = target_object_id
 
-    def get_action(self, belief: Belief) -> Action | None:
+    def get_action(self, belief: Belief) -> Action:
         """Get action to pick the target object."""
         mean_state = get_mean_state(belief)
 
         if mean_state.gripper_state.is_holding:
-            return None
+            return Action(dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP)
 
         if self.target_object_id not in mean_state.object_poses:
-            return None
+            return Action(dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP)
 
         target_obj = mean_state.object_poses[self.target_object_id]
         robot_x = mean_state.robot_pose.x
@@ -596,12 +636,12 @@ class PlaceController:
         self.target_x = target_x
         self.target_y = target_y
 
-    def get_action(self, belief: Belief) -> Action | None:
+    def get_action(self, belief: Belief) -> Action:
         """Get action to place the held object at target location."""
         mean_state = get_mean_state(belief)
 
         if not mean_state.gripper_state.is_holding:
-            return None
+            return Action(dx=0.0, dy=0.0, dtheta=0.0, gripper_action=GripperAction.NOOP)
 
         robot_x = mean_state.robot_pose.x
         robot_y = mean_state.robot_pose.y
@@ -627,7 +667,13 @@ class PlaceController:
         else:
             dx, dy = 0.0, 0.0
 
-        return Action(dx=dx, dy=dy, dtheta=0.0, gripper_action=GripperAction.NOOP)
+        target_theta = np.arctan2(dy_to_target, dx_to_target)
+        dtheta = target_theta - robot_theta
+        dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
+
+        return Action(
+            dx=dx, dy=dy, dtheta=dtheta * 0.5, gripper_action=GripperAction.NOOP
+        )
 
 
 class Cover2DEnv:
