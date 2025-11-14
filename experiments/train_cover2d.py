@@ -57,7 +57,7 @@ def train_place_controller_residual(
         backend="td3",
         learning_rate=3e-4,
         noise_std=0.1,
-        gamma=1.0,
+        gamma=0.99,
         buffer_size=100000,
         device="cpu",
         seed=seed,
@@ -99,8 +99,6 @@ def train_place_controller_residual(
         picked = False
         placed = False
 
-        placement_trajectory = []
-
         record_video = episode % video_freq == 0
         if record_video:
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -127,7 +125,6 @@ def train_place_controller_residual(
                 mean_state = get_mean_state(belief)
                 if mean_state.gripper_state.is_holding:
                     picked = True
-                    placement_trajectory = []
 
             else:
                 base_action = place_controller.get_action(belief)
@@ -141,19 +138,20 @@ def train_place_controller_residual(
                     env.render(ax=ax, show_belief=True)
                     writer.grab_frame()
 
-                placement_trajectory.append(
-                    {
-                        "obs": obs,
-                        "residual": residual,
-                        "reward": reward,
-                        "next_obs": encode_belief_cover2d(belief),
-                        "terminal": terminal,
-                    }
+                trainer.store_transition(
+                    obs,
+                    residual,
+                    reward,
+                    encode_belief_cover2d(belief),
+                    terminal,
                 )
 
                 episode_reward += reward
                 episode_steps += 1
                 total_steps += 1
+
+                if trainer.should_train():
+                    _ = trainer.train_step()
 
                 if terminal:
                     placed = True
@@ -162,25 +160,6 @@ def train_place_controller_residual(
                         f"  [Episode {episode + 1}, Step {step}] SUCCESS! Object placed in goal!"  # pylint: disable=line-too-long
                     )
                     break
-
-        if picked and len(placement_trajectory) > 0:
-            trajectory_returns = []
-            cumulative_return = 0.0
-            for t in reversed(placement_trajectory):
-                cumulative_return = t["reward"] + cumulative_return
-                trajectory_returns.insert(0, cumulative_return)
-
-            for i, t in enumerate(placement_trajectory):
-                trainer.store_transition(
-                    t["obs"],
-                    t["residual"],
-                    trajectory_returns[i],
-                    t["next_obs"],
-                    t["terminal"],
-                )
-
-                if trainer.should_train():
-                    _ = trainer.train_step()
 
         if record_video:
             writer.finish()
