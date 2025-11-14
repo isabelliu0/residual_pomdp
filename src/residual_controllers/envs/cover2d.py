@@ -119,24 +119,30 @@ class Action:
 
 @dataclass
 class Cover2DConfig:
-    """Configuration for Cover2D environment."""
+    """Configuration for Cover2D environment.
+
+    Three regions:
+    - Region 1: Observable, no transition noise
+    - Region 2: No observations, high transition noise
+    - Region 3: No observations, no transition noise
+    """
 
     world_width: float = 10.0
     world_height: float = 6.0
-    covered_boundary_x: float = 3.5
+    region1_end_x: float = 2.5
+    region2_end_x: float = 7.0
     goal_region_x: float = 9.2
     goal_region_y: float = 2.5
     goal_region_width: float = 0.8
     goal_region_height: float = 0.8
     robot_radius: float = 0.3
     block_size: float = 0.3
-    transition_noise_std: float = 0.2
-    observation_noise_std: float = 0.05
+    transition_noise_std: float = 0.3
     num_particles: int = 10
-    initial_robot_x: float = 2.0
+    initial_robot_x: float = 1.5
     initial_robot_y: float = 3.5
     initial_robot_theta: float = 0.0
-    initial_block_x: float = 2.0
+    initial_block_x: float = 1.5
     initial_block_y: float = 2.0
     seed: int = 0
 
@@ -173,11 +179,17 @@ class World:
             height=config.goal_region_height,
             theta=0.0,
         )
-
-        self.covered_region = Rectangle(
-            x=config.covered_boundary_x,
+        self.region2 = Rectangle(
+            x=config.region1_end_x,
             y=0.0,
-            width=config.world_width - config.covered_boundary_x,
+            width=config.region2_end_x - config.region1_end_x,
+            height=config.world_height,
+            theta=0.0,
+        )
+        self.region3 = Rectangle(
+            x=config.region2_end_x,
+            y=0.0,
+            width=config.world_width - config.region2_end_x,
             height=config.world_height,
             theta=0.0,
         )
@@ -281,9 +293,22 @@ class World:
         """Check if (x, y) is within world bounds."""
         return 0 <= x <= self.config.world_width and 0 <= y <= self.config.world_height
 
-    def in_covered_region(self, x: float) -> bool:
-        """Check if (x, y) is in the covered region."""
-        return x >= self.config.covered_boundary_x
+    def in_region1(self, x: float) -> bool:
+        """Check if x is in region 1."""
+        return x < self.config.region1_end_x
+
+    def in_region2(self, x: float) -> bool:
+        """Check if x is in region 2."""
+        return self.config.region1_end_x <= x < self.config.region2_end_x
+
+    def in_region3(self, x: float) -> bool:
+        """Check if x is in region 3."""
+        return x >= self.config.region2_end_x
+
+    def has_observation(self, x: float) -> bool:
+        """Check if robot at x gets observations in the corresponding
+        region."""
+        return self.in_region1(x)
 
     def in_goal_region(self, x: float, y: float) -> bool:
         """Check if block centered at (x, y) is entirely in the goal region."""
@@ -394,9 +419,14 @@ def sample_next_state(
     state: State, action: Action, world: World, rng: np.random.Generator
 ) -> State:
     """Sample next state given current state and action with noise."""
-    noise_x = rng.normal(0, world.config.transition_noise_std)
-    noise_y = rng.normal(0, world.config.transition_noise_std)
-    noise_theta = rng.normal(0, world.config.transition_noise_std * 0.5)
+    if world.in_region2(state.robot_pose.x):
+        noise_x = rng.normal(0, world.config.transition_noise_std)
+        noise_y = rng.normal(0, world.config.transition_noise_std)
+        noise_theta = rng.normal(0, world.config.transition_noise_std * 0.5)
+    else:
+        noise_x = 0.0
+        noise_y = 0.0
+        noise_theta = 0.0
 
     noisy_action = Action(
         dx=action.dx + noise_x,
@@ -408,21 +438,15 @@ def sample_next_state(
     return apply_action(state, noisy_action, world)
 
 
-def get_observation(
-    state: State, world: World, rng: np.random.Generator
-) -> Observation:
-    """Get observation from state with noise."""
-    if world.in_covered_region(state.robot_pose.x):
+def get_observation(state: State, world: World) -> Observation:
+    """Get observation from state."""
+    if not world.has_observation(state.robot_pose.x):
         return Observation(robot_pose=None, gripper_state=state.gripper_state)
 
-    noise_x = rng.normal(0, world.config.observation_noise_std)
-    noise_y = rng.normal(0, world.config.observation_noise_std)
-    noise_theta = rng.normal(0, world.config.observation_noise_std)
-
     observed_pose = Pose2D(
-        x=state.robot_pose.x + noise_x,
-        y=state.robot_pose.y + noise_y,
-        theta=state.robot_pose.theta + noise_theta,
+        x=state.robot_pose.x,
+        y=state.robot_pose.y,
+        theta=state.robot_pose.theta,
     )
 
     return Observation(robot_pose=observed_pose, gripper_state=state.gripper_state)
@@ -432,11 +456,13 @@ def create_initial_belief(
     initial_state: State, config: Cover2DConfig, rng: np.random.Generator
 ) -> Belief:
     """Create initial belief with particles around the initial state."""
-    particles = []
-    for _ in range(config.num_particles):
-        noise_x = rng.normal(0, config.observation_noise_std)
-        noise_y = rng.normal(0, config.observation_noise_std)
-        noise_theta = rng.normal(0, config.observation_noise_std)
+    particles = [initial_state]
+
+    initial_noise_std = 0.05
+    for _ in range(config.num_particles - 1):
+        noise_x = rng.normal(0, initial_noise_std)
+        noise_y = rng.normal(0, initial_noise_std)
+        noise_theta = rng.normal(0, initial_noise_std)
 
         noisy_pose = Pose2D(
             x=initial_state.robot_pose.x + noise_x,
@@ -472,17 +498,17 @@ def observation_likelihood(
 ) -> float:
     """Compute likelihood of observation given state."""
     if observation.robot_pose is None:
-        if world.in_covered_region(state.robot_pose.x):
-            return 1.0
-        return 0.01
-    if world.in_covered_region(state.robot_pose.x):
+        if world.has_observation(state.robot_pose.x):
+            return 0.01
+        return 1.0
+    if not world.has_observation(state.robot_pose.x):
         return 0.01
 
     dx = observation.robot_pose.x - state.robot_pose.x
     dy = observation.robot_pose.y - state.robot_pose.y
     dtheta = observation.robot_pose.theta - state.robot_pose.theta
 
-    std = world.config.observation_noise_std
+    std = 0.001
     likelihood = np.exp(
         -0.5 * ((dx / std) ** 2 + (dy / std) ** 2 + (dtheta / std) ** 2)
     )
@@ -723,7 +749,7 @@ class Cover2DEnv:
         assert self.belief is not None
 
         self.state = sample_next_state(self.state, action, self.world, self.rng)
-        observation = get_observation(self.state, self.world, self.rng)
+        observation = get_observation(self.state, self.world)
 
         predicted_belief = predict_belief(self.belief, action, self.world, self.rng)
         self.belief = update_belief(predicted_belief, observation, self.world)
@@ -772,16 +798,27 @@ class Cover2DEnv:
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
 
-        covered_rect = patches.Rectangle(
-            (self.config.covered_boundary_x, 0),
-            self.config.world_width - self.config.covered_boundary_x,
+        region2_rect = patches.Rectangle(
+            (self.config.region1_end_x, 0),
+            self.config.region2_end_x - self.config.region1_end_x,
+            self.config.world_height,
+            linewidth=0,
+            edgecolor="none",
+            facecolor="orange",
+            alpha=0.2,
+        )
+        ax.add_patch(region2_rect)
+
+        region3_rect = patches.Rectangle(
+            (self.config.region2_end_x, 0),
+            self.config.world_width - self.config.region2_end_x,
             self.config.world_height,
             linewidth=0,
             edgecolor="none",
             facecolor="gray",
             alpha=0.2,
         )
-        ax.add_patch(covered_rect)
+        ax.add_patch(region3_rect)
 
         goal_rect = patches.Rectangle(
             (self.config.goal_region_x, self.config.goal_region_y),

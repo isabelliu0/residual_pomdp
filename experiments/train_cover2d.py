@@ -43,8 +43,7 @@ def train_place_controller_residual(
     config = Cover2DConfig(
         seed=seed,
         num_particles=10,
-        transition_noise_std=0.2,
-        observation_noise_std=0.05,
+        transition_noise_std=0.3,
     )
 
     observation_dim = 9
