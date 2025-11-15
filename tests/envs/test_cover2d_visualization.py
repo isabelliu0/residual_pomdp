@@ -44,8 +44,7 @@ def test_visualization_full_episode():
     config = Cover2DConfig(
         seed=0,
         num_particles=10,
-        transition_noise_std=0.2,
-        observation_noise_std=0.05,
+        transition_noise_std=0.3,
     )
     env = Cover2DEnv(config)
     belief, _ = env.reset()
