@@ -202,7 +202,7 @@ if __name__ == "__main__":
         description="Train residual RL for PlaceController on Cover2D"
     )
     parser.add_argument(
-        "--num-episodes", type=int, default=100, help="Number of training episodes"
+        "--num-episodes", type=int, default=1000, help="Number of training episodes"
     )
     parser.add_argument(
         "--max-steps", type=int, default=100, help="Max steps per episode"

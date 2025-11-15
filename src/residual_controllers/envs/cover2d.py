@@ -129,20 +129,20 @@ class Cover2DConfig:
 
     world_width: float = 10.0
     world_height: float = 6.0
-    region1_end_x: float = 2.5
-    region2_end_x: float = 7.0
-    goal_region_x: float = 9.2
+    region1_end_x: float = 2.0
+    region2_end_x: float = 8.0
+    goal_region_x: float = 9.0
     goal_region_y: float = 2.5
-    goal_region_width: float = 0.8
-    goal_region_height: float = 0.8
+    goal_region_width: float = 1.0
+    goal_region_height: float = 1.0
     robot_radius: float = 0.3
     block_size: float = 0.3
     transition_noise_std: float = 0.3
     num_particles: int = 10
-    initial_robot_x: float = 1.5
+    initial_robot_x: float = 1.0
     initial_robot_y: float = 3.5
     initial_robot_theta: float = 0.0
-    initial_block_x: float = 1.5
+    initial_block_x: float = 1.0
     initial_block_y: float = 2.0
     seed: int = 0
 
@@ -832,7 +832,7 @@ class Cover2DEnv:
         ax.add_patch(goal_rect)
 
         if show_belief:
-            num_particles_to_show = min(5, len(self.belief.particles))
+            num_particles_to_show = min(10, len(self.belief.particles))
             indices = np.linspace(
                 0, len(self.belief.particles) - 1, num_particles_to_show, dtype=int
             )
