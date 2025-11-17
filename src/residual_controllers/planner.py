@@ -83,7 +83,7 @@ def symk_search(
         sas_file,
         "--search-options",
         "--search",
-        f"symk-{config['symk_direction']}("
+        f"symk_{config['symk_direction']}("
         f"simple={str(config['symk_simple']).lower()},"
         f"plan_selection={config['symk_selection']}("
         f"num_plans={config['num_skeletons']},dump_plans=false))",

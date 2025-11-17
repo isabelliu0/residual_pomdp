@@ -1,5 +1,7 @@
 """Tests for Cover2DEnv visualization."""
 
+from pathlib import Path
+
 from residual_controllers.envs.cover2d import (
     Cover2DConfig,
     Cover2DEnv,
@@ -7,6 +9,7 @@ from residual_controllers.envs.cover2d import (
     PlaceController,
     get_mean_state,
 )
+from residual_controllers.planner import get_plans
 
 
 def test_visualization_with_controller():
@@ -83,3 +86,43 @@ def test_visualization_full_episode():
     # writer.finish()
     # plt.close(fig)
     # print(f"Video saved to {video_path}")
+
+
+def test_cover2d_with_planner():
+    """Test Cover2D with SymK planner."""
+    config = Cover2DConfig(seed=42, num_particles=10, transition_noise_std=0.3)
+    env = Cover2DEnv(config)
+    _, _ = env.reset()
+
+    problem_spec = env.get_planning_problem()
+    print("Domain PDDL:")
+    print(problem_spec.domain_pddl)
+    print("\nProblem PDDL:")
+    print(problem_spec.problem_pddl)
+
+    debug_dir = Path("logs/test_pddl")
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    domain_path = debug_dir / "domain.pddl"
+    problem_path = debug_dir / "problem.pddl"
+    with open(domain_path, "w", encoding="utf-8") as f:
+        f.write(problem_spec.domain_pddl)
+    with open(problem_path, "w", encoding="utf-8") as f:
+        f.write(problem_spec.problem_pddl)
+
+    plans = get_plans(
+        domain_file=str(domain_path),
+        problem_file=str(problem_path),
+        num_plans=5,
+    )
+
+    print(f"\nFound {len(plans)} plans:")
+    for i, plan in enumerate(plans):
+        plan_strs = [f"{a.name}({','.join(a.args)})" for a in plan]
+        print(f"Plan {i+1}: {plan_strs}")
+
+    print(f"\nCheck {debug_dir}/ for PDDL and SAS files")
+
+    assert len(plans) > 0, "Should find at least one plan"
+    assert len(plans[0]) == 2, "Simple pick-place should have 2 actions"
+    assert plans[0][0].name == "pick", "First action should be pick"
+    assert plans[0][1].name == "place", "Second action should be place"
