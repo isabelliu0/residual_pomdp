@@ -371,20 +371,51 @@ def apply_action(state: State, action: Action, world: World) -> State:
     new_theta = state.robot_pose.theta + action.dtheta
     new_theta = np.arctan2(np.sin(new_theta), np.cos(new_theta))
 
+    cos_theta = np.cos(new_theta)
+    sin_theta = np.sin(new_theta)
     finger_width = world.robot_radius * 1.0
+
     if state.gripper_state.is_holding:
         object_offset = world.robot_radius + finger_width * 0.8
-        max_extent = object_offset + world.block_size / 2
+        half_block = world.block_size / 2
+
+        obj_x = new_x + object_offset * cos_theta
+        obj_y = new_y + object_offset * sin_theta
+        obj_min_x = obj_x - half_block
+        obj_max_x = obj_x + half_block
+        obj_min_y = obj_y - half_block
+        obj_max_y = obj_y + half_block
+
+        if obj_min_x < 0:
+            new_x -= obj_min_x
+        elif obj_max_x > world.config.world_width:
+            new_x -= obj_max_x - world.config.world_width
+
+        if obj_min_y < 0:
+            new_y -= obj_min_y
+        elif obj_max_y > world.config.world_height:
+            new_y -= obj_max_y - world.config.world_height
     else:
-        max_extent = world.robot_radius + finger_width
+        gripper_offset = world.robot_radius + finger_width
+        gripper_x = new_x + gripper_offset * cos_theta
+        gripper_y = new_y + gripper_offset * sin_theta
 
-    min_x = max_extent
-    max_x = world.config.world_width - max_extent
-    min_y = max_extent
-    max_y = world.config.world_height - max_extent
+        if gripper_x < 0:
+            new_x -= gripper_x
+        elif gripper_x > world.config.world_width:
+            new_x -= gripper_x - world.config.world_width
 
-    new_x = np.clip(new_x, min_x, max_x)
-    new_y = np.clip(new_y, min_y, max_y)
+        if gripper_y < 0:
+            new_y -= gripper_y
+        elif gripper_y > world.config.world_height:
+            new_y -= gripper_y - world.config.world_height
+
+    new_x = np.clip(
+        new_x, world.robot_radius, world.config.world_width - world.robot_radius
+    )
+    new_y = np.clip(
+        new_y, world.robot_radius, world.config.world_height - world.robot_radius
+    )
 
     new_robot_pose = Pose2D(x=new_x, y=new_y, theta=new_theta)
     new_gripper_state = state.gripper_state

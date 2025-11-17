@@ -25,7 +25,7 @@ from residual_controllers.residual_policy import ResidualPolicy
 
 
 def train_place_controller_residual(
-    num_episodes: int = 100,
+    num_episodes: int = 1000,
     max_steps_per_episode: int = 100,
     save_dir: str = "trained_models",
     video_dir: str = "videos",
