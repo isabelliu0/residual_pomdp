@@ -370,8 +370,16 @@ class World:
         """Check if the robot can grasp the block at given positions."""
         gripper_x, gripper_y = self.get_gripper_center(robot_x, robot_y, robot_theta)
         dist = self.distance(gripper_x, gripper_y, block_x, block_y)
-        grasp_threshold = self.block_size / 2 + 0.2  # to be adjusted
+        grasp_threshold = self.block_size / 2 + 0.2
         return dist <= grasp_threshold
+
+    def check_robot_object_collision(
+        self, robot_x: float, robot_y: float, object_x: float, object_y: float
+    ) -> bool:
+        """Check if robot body collides with object."""
+        dist = self.distance(robot_x, robot_y, object_x, object_y)
+        collision_threshold = self.robot_radius + self.block_size / 2
+        return dist < collision_threshold
 
 
 def apply_action(state: State, action: Action, world: World) -> State:
@@ -426,6 +434,18 @@ def apply_action(state: State, action: Action, world: World) -> State:
     new_y = np.clip(
         new_y, world.robot_radius, world.config.world_height - world.robot_radius
     )
+
+    for obj_id, obj_pose in state.object_poses.items():
+        if (
+            state.gripper_state.is_holding
+            and obj_id == state.gripper_state.held_object_id
+        ):
+            continue
+        if world.check_robot_object_collision(new_x, new_y, obj_pose.x, obj_pose.y):
+            new_x = state.robot_pose.x
+            new_y = state.robot_pose.y
+            new_theta = state.robot_pose.theta
+            break
 
     new_robot_pose = Pose2D(x=new_x, y=new_y, theta=new_theta)
     new_gripper_state = state.gripper_state
