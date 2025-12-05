@@ -157,10 +157,10 @@ def train_with_domain_randomization(
     print(f"Run name: {run_name}")
     print(f"Episodes: {num_episodes}, Max steps: {max_steps_per_episode}")
     print(f"Observation dim: {observation_dim}, Action dim: {action_dim}")
-    print(f"Domain Randomization:")
-    print(f"  - Transition noise std: [0.2, 0.5]")
-    print(f"  - Action scale: [0.8, 1.2]")
-    print(f"  - Rotation noise scale: [0.3, 0.7]")
+    print("Domain Randomization:")
+    print("  - Transition noise std: [0.2, 0.5]")
+    print("  - Action scale: [0.8, 1.2]")
+    print("  - Rotation noise scale: [0.3, 0.7]")
     print(f"Save directory: {save_path}")
     print(f"Video directory: {video_path}")
     print("-" * 60)
@@ -232,7 +232,9 @@ def train_with_domain_randomization(
                 total_steps += 1
 
                 if record_video:
-                    dr_env.render(ax=ax, show_belief=True, residual_action=actual_residual)
+                    dr_env.render(
+                        ax=ax, show_belief=True, residual_action=actual_residual
+                    )
                     writer.grab_frame()
 
                 if mean_state.gripper_state.is_holding:
@@ -267,7 +269,9 @@ def train_with_domain_randomization(
                 total_steps += 1
 
                 if record_video:
-                    dr_env.render(ax=ax, show_belief=True, residual_action=actual_residual)
+                    dr_env.render(
+                        ax=ax, show_belief=True, residual_action=actual_residual
+                    )
                     writer.grab_frame()
 
                 if terminal:

@@ -130,7 +130,9 @@ def evaluate_residual_policies(
 
                 if use_residual and pick_residual_policy is not None:
                     obs = encode_belief_cover2d(belief)
-                    residual = pick_residual_policy.predict(obs, deterministic=deterministic)
+                    residual = pick_residual_policy.predict(
+                        obs, deterministic=deterministic
+                    )
                     action = action_from_residual(base_action, residual)
                     actual_residual = np.array(
                         [action.dx - base_action.dx, action.dy - base_action.dy]
@@ -156,7 +158,9 @@ def evaluate_residual_policies(
 
                 if use_residual and place_residual_policy is not None:
                     obs = encode_belief_cover2d(belief)
-                    residual = place_residual_policy.predict(obs, deterministic=deterministic)
+                    residual = place_residual_policy.predict(
+                        obs, deterministic=deterministic
+                    )
                     action = action_from_residual(base_action, residual)
                     actual_residual = np.array(
                         [action.dx - base_action.dx, action.dy - base_action.dy]
@@ -215,7 +219,9 @@ def evaluate_residual_policies(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate residual RL policies on Cover2D")
+    parser = argparse.ArgumentParser(
+        description="Evaluate residual RL policies on Cover2D"
+    )
     parser.add_argument(
         "--pick-model",
         type=str,
