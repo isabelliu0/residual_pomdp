@@ -137,7 +137,9 @@ def train_place_controller_residual(
                 residual = pick_residual_policy.predict(obs, deterministic=False)
                 action = action_from_residual(base_action, residual)
 
-                actual_residual = np.array([action.dx - base_action.dx, action.dy - base_action.dy])
+                actual_residual = np.array(
+                    [action.dx - base_action.dx, action.dy - base_action.dy]
+                )
 
                 belief, _, _, _ = env.step(action)
                 next_obs = encode_belief_cover2d(belief)
@@ -174,7 +176,9 @@ def train_place_controller_residual(
                 residual = place_residual_policy.predict(obs, deterministic=False)
                 action = action_from_residual(base_action, residual)
 
-                actual_residual = np.array([action.dx - base_action.dx, action.dy - base_action.dy])
+                actual_residual = np.array(
+                    [action.dx - base_action.dx, action.dy - base_action.dy]
+                )
 
                 belief, reward, terminal, _ = env.step(action)
                 next_obs = encode_belief_cover2d(belief)
@@ -202,7 +206,7 @@ def train_place_controller_residual(
                     placed = True
                     success_count += 1
                     print(
-                        f"  [Episode {episode + 1}, Step {step}] SUCCESS! Object placed in goal!"
+                        f"  [Episode {episode + 1}, Step {step}] SUCCESS! Object placed in goal!"  # pylint: disable=line-too-long
                     )
                     break
 
