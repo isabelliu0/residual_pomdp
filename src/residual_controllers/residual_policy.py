@@ -6,6 +6,7 @@ from typing import Literal
 
 import gymnasium as gym
 import numpy as np
+import torch
 from gymnasium import spaces
 from stable_baselines3 import DDPG, TD3
 from stable_baselines3.common.logger import configure
@@ -78,6 +79,16 @@ class ResidualPolicy:
             verbose=0,
         )
         self.model.set_logger(configure(None, ["stdout"]))
+
+        with torch.no_grad():
+            if hasattr(self.model.actor, "mu"):
+                last_layer = None
+                for layer in self.model.actor.mu:
+                    if isinstance(layer, torch.nn.Linear):
+                        last_layer = layer
+                if last_layer is not None:
+                    torch.nn.init.zeros_(last_layer.weight)
+                    torch.nn.init.zeros_(last_layer.bias)
 
     def predict(
         self, observation: np.ndarray, deterministic: bool = True

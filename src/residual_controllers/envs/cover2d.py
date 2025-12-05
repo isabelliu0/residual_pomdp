@@ -917,7 +917,12 @@ class Cover2DEnv(PlanningEnv):
 
         return PlanningProblemSpec(domain_pddl=domain_pddl, problem_pddl=problem_pddl)
 
-    def render(self, ax: Axes | None = None, show_belief: bool = True) -> Axes:
+    def render(
+        self,
+        ax: Axes | None = None,
+        show_belief: bool = True,
+        residual_action: np.ndarray | None = None,
+    ) -> Axes:
         """Render the current state of the environment."""
         if ax is None:
             _, ax = plt.subplots(figsize=(10, 6))
@@ -1090,6 +1095,22 @@ class Cover2DEnv(PlanningEnv):
                 alpha=1.0,
             )
             ax.add_patch(block_rect)
+
+        if residual_action is not None:
+            arrow_scale = 1.0
+            ax.arrow(
+                self.state.robot_pose.x,
+                self.state.robot_pose.y,
+                residual_action[0] * arrow_scale,
+                residual_action[1] * arrow_scale,
+                head_width=0.2,
+                head_length=0.15,
+                fc="black",
+                ec="black",
+                alpha=0.8,
+                width=0.03,
+                label="Residual Action",
+            )
 
         ax.set_title(f"Cover2D Environment (Step {self.steps})")
         ax.set_xlabel("X")
