@@ -1,4 +1,4 @@
-"""Train Cover2D PlaceController residual RL policy."""
+"""Train Cover2D residual RL policies for both Pick and Place controllers."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.animation import FFMpegWriter
 
 from residual_controllers.envs.cover2d import (
@@ -29,7 +30,7 @@ def train_place_controller_residual(
     max_steps_per_episode: int = 100,
     save_dir: str = "trained_models",
     video_dir: str = "videos",
-    video_freq: int = 10,
+    video_freq: int = 50,
     seed: int = 0,
 ) -> None:
     """Train residual RL policy for PlaceController on Cover2DEnv."""
@@ -47,10 +48,10 @@ def train_place_controller_residual(
     )
 
     observation_dim = 9
-    action_dim = 2  # for now, does not allow corrections for dtheta or gripper action
+    action_dim = 2
 
-    residual_policy = ResidualPolicy(
-        skill_name="place",
+    pick_residual_policy = ResidualPolicy(
+        skill_name="pick",
         observation_dim=observation_dim,
         action_dim=action_dim,
         backend="td3",
@@ -62,14 +63,34 @@ def train_place_controller_residual(
         seed=seed,
     )
 
-    trainer = OnlineTrainer(
-        residual_policy=residual_policy,
+    place_residual_policy = ResidualPolicy(
+        skill_name="place",
+        observation_dim=observation_dim,
+        action_dim=action_dim,
+        backend="td3",
+        learning_rate=3e-4,
+        noise_std=0.1,
+        gamma=0.99,
+        buffer_size=100000,
+        device="cpu",
+        seed=seed + 1,
+    )
+
+    pick_trainer = OnlineTrainer(
+        residual_policy=pick_residual_policy,
         gradient_steps=1,
         train_freq=1,
         min_buffer_size=256,
     )
 
-    print("Training residual RL for PlaceController on Cover2D")
+    place_trainer = OnlineTrainer(
+        residual_policy=place_residual_policy,
+        gradient_steps=1,
+        train_freq=1,
+        min_buffer_size=256,
+    )
+
+    print("Training residual RL for Pick and Place Controllers on Cover2D")
     print(f"Run name: {run_name}")
     print(f"Episodes: {num_episodes}, Max steps: {max_steps_per_episode}")
     print(f"Observation dim: {observation_dim}, Action dim: {action_dim}")
@@ -111,46 +132,75 @@ def train_place_controller_residual(
             mean_state = get_mean_state(belief)
 
             if not mean_state.gripper_state.is_holding and not picked:
-                action = pick_controller.get_action(belief)
-                belief, reward, terminal, _ = env.step(action)
-                episode_reward += reward
+                base_action = pick_controller.get_action(belief)
+                obs = encode_belief_cover2d(belief)
+                residual = pick_residual_policy.predict(obs, deterministic=False)
+                action = action_from_residual(base_action, residual)
+
+                actual_residual = np.array(
+                    [action.dx - base_action.dx, action.dy - base_action.dy]
+                )
+
+                belief, _, _, _ = env.step(action)
+                next_obs = encode_belief_cover2d(belief)
+
+                mean_state = get_mean_state(belief)
+                pick_reward = 1.0 if mean_state.gripper_state.is_holding else 0.0
+                pick_terminal = mean_state.gripper_state.is_holding
+
+                pick_trainer.store_transition(
+                    obs,
+                    residual,
+                    pick_reward,
+                    next_obs,
+                    pick_terminal,
+                )
+
+                if pick_trainer.should_train():
+                    _ = pick_trainer.train_step()
+
+                episode_reward += pick_reward
                 episode_steps += 1
                 total_steps += 1
 
                 if record_video:
-                    env.render(ax=ax, show_belief=True)
+                    env.render(ax=ax, show_belief=True, residual_action=actual_residual)
                     writer.grab_frame()
 
-                mean_state = get_mean_state(belief)
                 if mean_state.gripper_state.is_holding:
                     picked = True
 
             else:
                 base_action = place_controller.get_action(belief)
                 obs = encode_belief_cover2d(belief)
-                residual = residual_policy.predict(obs, deterministic=False)
+                residual = place_residual_policy.predict(obs, deterministic=False)
                 action = action_from_residual(base_action, residual)
 
+                actual_residual = np.array(
+                    [action.dx - base_action.dx, action.dy - base_action.dy]
+                )
+
                 belief, reward, terminal, _ = env.step(action)
+                next_obs = encode_belief_cover2d(belief)
 
-                if record_video:
-                    env.render(ax=ax, show_belief=True)
-                    writer.grab_frame()
-
-                trainer.store_transition(
+                place_trainer.store_transition(
                     obs,
                     residual,
                     reward,
-                    encode_belief_cover2d(belief),
+                    next_obs,
                     terminal,
                 )
+
+                if place_trainer.should_train():
+                    _ = place_trainer.train_step()
 
                 episode_reward += reward
                 episode_steps += 1
                 total_steps += 1
 
-                if trainer.should_train():
-                    _ = trainer.train_step()
+                if record_video:
+                    env.render(ax=ax, show_belief=True, residual_action=actual_residual)
+                    writer.grab_frame()
 
                 if terminal:
                     placed = True
@@ -165,7 +215,8 @@ def train_place_controller_residual(
             plt.close(fig)
             print(f"  Video saved to {video_file}")
 
-        stats = trainer.get_training_stats()
+        pick_stats = pick_trainer.get_training_stats()
+        place_stats = place_trainer.get_training_stats()
         success_rate = success_count / (episode + 1)
 
         print(
@@ -174,27 +225,28 @@ def train_place_controller_residual(
             f"Reward: {episode_reward:.2f} | "
             f"Success: {placed} | "
             f"Success Rate: {success_rate:.2%} | "
-            f"Buffer: {stats['num_transitions']} | "
-            f"Updates: {stats['num_updates']}"
+            f"Pick Buffer: {pick_stats['num_transitions']} | "
+            f"Place Buffer: {place_stats['num_transitions']}"
         )
 
         if (episode + 1) % 10 == 0:
-            model_path = save_path / f"residual_place_ep{episode + 1}.pkl"
-            trainer_path = save_path / f"trainer_ep{episode + 1}.pkl"
-            residual_policy.save(str(model_path))
-            trainer.save(str(trainer_path))
-            print(f"  Saved checkpoint to {model_path}")
+            pick_model_path = save_path / f"residual_pick_ep{episode + 1}.pkl"
+            place_model_path = save_path / f"residual_place_ep{episode + 1}.pkl"
+            pick_residual_policy.save(str(pick_model_path))
+            place_residual_policy.save(str(place_model_path))
+            print(f"  Saved checkpoints to {save_path}")
 
-    final_model_path = save_path / "residual_place_final.pkl"
-    final_trainer_path = save_path / "trainer_final.pkl"
-    residual_policy.save(str(final_model_path))
-    trainer.save(str(final_trainer_path))
+    final_pick_model_path = save_path / "residual_pick_final.pkl"
+    final_place_model_path = save_path / "residual_place_final.pkl"
+    pick_residual_policy.save(str(final_pick_model_path))
+    place_residual_policy.save(str(final_place_model_path))
 
     print("-" * 60)
     print("Training completed!")
     print(f"Total steps: {total_steps}")
     print(f"Success rate: {success_rate:.2%}")
-    print(f"Final model saved to {final_model_path}")
+    print(f"Final pick model saved to {final_pick_model_path}")
+    print(f"Final place model saved to {final_place_model_path}")
 
 
 if __name__ == "__main__":
