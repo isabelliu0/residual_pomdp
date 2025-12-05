@@ -15,3 +15,48 @@ In POMDPs, motion planners operating on mean/canonical states can produce unreli
 ```
 
 The residual policy learns small corrections that improve the success rate of achieving the expected verified effects predicted by the symbolic planner (SymK).
+
+## Quick Start
+
+### Training Residual Policies
+
+**Standard Training:**
+
+```bash
+python experiments/train_cover2d.py --num-episodes 1000 --max-steps 100 --seed 0
+```
+
+**Training with Domain Randomization:**
+
+```bash
+python experiments/train_cover2d_dr.py --num-episodes 1000 --max-steps 100 --seed 0
+```
+
+Domain randomization varies:
+
+- Transition noise std: [0.2, 0.5]
+- Action effectiveness scale: [0.8, 1.2]
+- Rotation noise scale: [0.3, 0.7]
+
+**Pure RL Baseline (for comparison):**
+
+```bash
+python experiments/train_cover2d_pure_rl.py --num-episodes 1000 --max-steps 200 --seed 0
+```
+
+### Evaluating Trained Policies
+
+**Evaluate with residual policies:**
+
+```bash
+python experiments/eval_cover2d.py \
+  --pick-model trained_models/20250105_143022/residual_pick_final.pkl \
+  --place-model trained_models/20250105_143022/residual_place_final.pkl \
+  --num-episodes 100 \
+  --seed 42
+```
+
+Important evaluation parameters:
+
+- `--no-residual`: Whether we want to evaluate with residual policies
+- `--stochastic`: Whether we want to make the trained policies deterministic at evaluation
