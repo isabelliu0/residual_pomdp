@@ -21,6 +21,11 @@ from residual_controllers.symbolic import (
     Predicate,
     ProblemSpec,
 )
+from residual_controllers.utils import (
+    compute_angular_uncertainty,
+    compute_se2_information_reward,
+    compute_translational_uncertainty,
+)
 
 
 class GripperAction(Enum):
@@ -164,11 +169,11 @@ class Cover2DConfig:
     """
 
     world_width: float = 10.0
-    world_height: float = 6.0
+    world_height: float = 8.0
     region1_end_x: float = 2.0
     region2_end_x: float = 10.0
     goal_region_x: float = 9.0
-    goal_region_y: float = 2.5
+    goal_region_y: float = 3.5
     goal_region_width: float = 1.0
     goal_region_height: float = 1.0
     robot_radius: float = 0.3
@@ -176,14 +181,16 @@ class Cover2DConfig:
     transition_noise_std: float = 0.3
     num_particles: int = 10
     initial_robot_x: float = 1.0
-    initial_robot_y: float = 3.5
+    initial_robot_y: float = 6.5
     initial_robot_theta: float = 0.0
     initial_block_x: float = 1.0
-    initial_block_y: float = 2.0
+    initial_block_y: float = 4.0
     seed: int = 0
     num_beacons: int = 0
     beacon_physical_radius: float = 0.2
     beacon_detection_radius: float = 0.75
+    info_bonus_weight: float = 0.0
+    info_alpha: float = 1.0
 
 
 @dataclass
@@ -689,26 +696,29 @@ def generate_beacons(
     rng: np.random.Generator,
     existing_objects: list[tuple[float, float]],
 ) -> dict[int, BeaconPose]:
-    """Generate beacon placements close to top/bottom walls only."""
+    """Generate beacons scattered in Region 2, avoiding center horizontal
+    path."""
     if config.num_beacons == 0:
         return {}
 
     beacons: dict[int, BeaconPose] = {}
     min_distance_from_objects = 0.5
-    max_attempts_per_beacon = 50
-    wall_zone = 0.5
+    max_attempts_per_beacon = 200
+
+    center_y = config.world_height / 2
+    avoid_zone_half_height = 2.0
 
     for beacon_id in range(config.num_beacons):
         attempts = 0
 
         while attempts < max_attempts_per_beacon:
-            x = rng.uniform(config.region1_end_x, config.world_width - 0.5)
+            x = rng.uniform(config.region1_end_x + 0.5, config.region2_end_x - 0.5)
 
             if rng.random() < 0.5:
-                y = rng.uniform(0.5, wall_zone)
+                y = rng.uniform(0.5, center_y - avoid_zone_half_height)
             else:
                 y = rng.uniform(
-                    config.world_height - wall_zone, config.world_height - 0.5
+                    center_y + avoid_zone_half_height, config.world_height - 0.5
                 )
 
             too_close = False
@@ -904,6 +914,7 @@ class Cover2DEnv(PlanningEnv):
         self.rng = np.random.default_rng(config.seed)
         self.state: State | None = None
         self.belief: Belief | None = None
+        self.prev_belief: Belief | None = None
         self.steps = 0
 
     def reset(self) -> tuple[Belief, dict[str, Any]]:
@@ -940,6 +951,7 @@ class Cover2DEnv(PlanningEnv):
         )
 
         self.belief = create_initial_belief(self.state, self.config, self.rng)
+        self.prev_belief = None
         self.steps = 0
 
         info = {"state": self.state}
@@ -950,17 +962,47 @@ class Cover2DEnv(PlanningEnv):
         assert self.state is not None
         assert self.belief is not None
 
+        prev_belief = self.belief
+
         self.state = sample_next_state(self.state, action, self.world, self.rng)
         observation = get_observation(self.state, self.world)
 
         predicted_belief = predict_belief(self.belief, action, self.world, self.rng)
         self.belief = update_belief(predicted_belief, observation, self.world)
 
-        reward = self._compute_reward(self.state)
+        task_reward = self._compute_reward(self.state)
+
+        info_reward = 0.0
+        if self.prev_belief is not None and self.config.info_bonus_weight > 0:
+            info_reward = compute_se2_information_reward(
+                prev_particles=self.prev_belief.particles,
+                curr_particles=self.belief.particles,
+                prev_weights=self.prev_belief.weights,
+                curr_weights=self.belief.weights,
+                alpha=self.config.info_alpha,
+            )
+
+        reward = task_reward + self.config.info_bonus_weight * info_reward
         terminal = self._is_terminal(self.state)
         self.steps += 1
 
-        info = {"state": self.state, "observation": observation}
+        self.prev_belief = prev_belief
+
+        trans_uncertainty = compute_translational_uncertainty(
+            self.belief.particles, self.belief.weights
+        )
+        ang_uncertainty = compute_angular_uncertainty(
+            self.belief.particles, self.belief.weights
+        )
+
+        info = {
+            "state": self.state,
+            "observation": observation,
+            "task_reward": task_reward,
+            "info_reward": info_reward,
+            "translational_uncertainty": trans_uncertainty,
+            "angular_uncertainty": ang_uncertainty,
+        }
         return self.belief, reward, terminal, info
 
     def _compute_reward(self, state: State) -> float:

@@ -90,7 +90,7 @@ def test_visualization_with_controller():
 
 def test_visualization_full_episode():
     """Test visualization of Cover2DEnv for a full episode."""
-    # Uncomment to enable visualization
+    # # Uncomment to enable visualization
     # from pathlib import Path
 
     # import matplotlib.pyplot as plt
@@ -100,6 +100,7 @@ def test_visualization_full_episode():
         seed=0,
         num_particles=10,
         transition_noise_std=0.3,
+        num_beacons=3,
     )
     env = Cover2DEnv(config)
     belief, _ = env.reset()
