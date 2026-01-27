@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import numpy as np
+
 from residual_controllers.envs.cover2d import (
     Action,
     Cover2DConfig,
@@ -26,19 +28,30 @@ def test_beacon_visualization():
     env = Cover2DEnv(config)
     env.reset()
 
+    def compute_belief_std():
+        x_vals = [p.robot_pose.x for p in env.belief.particles]
+        y_vals = [p.robot_pose.y for p in env.belief.particles]
+        return np.std(x_vals), np.std(y_vals)
+
     nearby = env.world.get_nearby_beacons(env.state)
     print(f"Robot initially near {len(nearby)} beacons")
 
     # ax = env.render(show_belief=True)
 
-    for step in range(10):
-        action = Action(dx=0.5, dy=0.0, dtheta=0.0)
-        _, _, terminal, _ = env.step(action)
+    for step in range(20):
+        action = Action(dx=0.5, dy=-0.5, dtheta=0.0)
+        _, _, terminal, info = env.step(action)
 
         nearby = env.world.get_nearby_beacons(env.state)
+        std_x, std_y = compute_belief_std()
+
+        beacons_in = info["observation"].beacons_in
+        has_pose_obs = info["observation"].robot_pose is not None
+
         print(
             f"Step {step}: Robot at ({env.state.robot_pose.x:.2f}, {env.state.robot_pose.y:.2f}), "  # pylint: disable=line-too-long
-            f"near {len(nearby)} beacons"
+            f"near {len(nearby)} beacons, beacons_in={beacons_in}, "
+            f"pose_obs={has_pose_obs}, std=({std_x:.3f}, {std_y:.3f})"
         )
 
         # ax = env.render(show_belief=True)

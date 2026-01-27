@@ -124,6 +124,7 @@ class Observation:
 
     robot_pose: Pose2D | None
     gripper_state: GripperState
+    beacons_in: list[int] | None = None
 
 
 @dataclass
@@ -547,17 +548,31 @@ def sample_next_state(
 
 
 def get_observation(state: State, world: World) -> Observation:
-    """Get observation from state."""
-    if not world.has_observation(state.robot_pose.x):
-        return Observation(robot_pose=None, gripper_state=state.gripper_state)
+    """Get observation from state.
 
-    observed_pose = Pose2D(
-        x=state.robot_pose.x,
-        y=state.robot_pose.y,
-        theta=state.robot_pose.theta,
+    Always observe: gripper_state, beacons_in
+    Conditionally observe: robot_pose (in Region 1 OR near any beacon)
+    """
+    nearby_beacons = world.get_nearby_beacons(state)
+    beacons_in = [b.beacon_id for b in nearby_beacons]
+
+    has_region_obs = world.has_observation(state.robot_pose.x)
+    has_beacon_obs = len(nearby_beacons) > 0
+
+    if has_region_obs or has_beacon_obs:
+        observed_pose = Pose2D(
+            x=state.robot_pose.x,
+            y=state.robot_pose.y,
+            theta=state.robot_pose.theta,
+        )
+    else:
+        observed_pose = None
+
+    return Observation(
+        robot_pose=observed_pose,
+        gripper_state=state.gripper_state,
+        beacons_in=beacons_in,
     )
-
-    return Observation(robot_pose=observed_pose, gripper_state=state.gripper_state)
 
 
 def create_initial_belief(
@@ -631,7 +646,11 @@ def observation_likelihood(
 def update_belief(
     predicted_belief: Belief, observation: Observation, world: World
 ) -> Belief:
-    """Update belief with observation using particle weights."""
+    """Update belief with observation using particle weights.
+
+    Following slam_collect pattern: when robot_pose observation is received
+    (from Region 1 OR beacon), all particles collapse to observed pose.
+    """
     new_weights = np.array(
         [
             predicted_belief.weights[i]
@@ -645,10 +664,13 @@ def update_belief(
     else:
         new_weights = new_weights / np.sum(new_weights)
 
+    if observation.robot_pose is not None:
+        for particle in predicted_belief.particles:
+            particle.robot_pose = observation.robot_pose
+        new_weights = np.ones(len(new_weights)) / len(new_weights)
+
     effective_sample_size = 1.0 / np.sum(new_weights**2)
-    if (
-        effective_sample_size < len(predicted_belief.particles) / 2
-    ):  # too many low-weight particles
+    if effective_sample_size < len(predicted_belief.particles) / 2:
         return resample_belief(predicted_belief.particles, new_weights)
 
     return Belief(particles=predicted_belief.particles, weights=new_weights)
