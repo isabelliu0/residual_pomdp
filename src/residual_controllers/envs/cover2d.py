@@ -80,16 +80,41 @@ class ObjectPose:
 
 
 @dataclass
+class BeaconPose:
+    """Beacon that restores ego-pose certainty within detection radius."""
+
+    beacon_id: int
+    x: float
+    y: float
+    physical_radius: float = 0.2
+    detection_radius: float = 1.0
+
+    def to_array(self) -> np.ndarray:
+        """Convert beacon pose to numpy array."""
+        return np.array([self.x, self.y], dtype=np.float32)
+
+    def __hash__(self):
+        return hash((self.beacon_id, self.x, self.y))
+
+
+@dataclass
 class State:
     """Full state of the environment."""
 
     robot_pose: Pose2D
     gripper_state: GripperState
     object_poses: dict[int, ObjectPose]
+    beacon_poses: dict[int, BeaconPose] | None = None
 
     def __hash__(self):
+        beacon_tuple = tuple(self.beacon_poses.items()) if self.beacon_poses else ()
         return hash(
-            (self.robot_pose, self.gripper_state, tuple(self.object_poses.items()))
+            (
+                self.robot_pose,
+                self.gripper_state,
+                tuple(self.object_poses.items()),
+                beacon_tuple,
+            )
         )
 
 
@@ -155,6 +180,9 @@ class Cover2DConfig:
     initial_block_x: float = 1.0
     initial_block_y: float = 2.0
     seed: int = 0
+    num_beacons: int = 0
+    beacon_physical_radius: float = 0.2
+    beacon_detection_radius: float = 0.75
 
 
 @dataclass
@@ -381,6 +409,24 @@ class World:
         collision_threshold = self.robot_radius + self.block_size / 2
         return dist < collision_threshold
 
+    def is_near_beacon(
+        self, robot_x: float, robot_y: float, beacon: BeaconPose
+    ) -> bool:
+        """Check if robot is within beacon's detection radius."""
+        dist = self.distance(robot_x, robot_y, beacon.x, beacon.y)
+        return dist <= beacon.detection_radius
+
+    def get_nearby_beacons(self, state: State) -> list[BeaconPose]:
+        """Get all beacons within detection radius of the robot."""
+        if not state.beacon_poses:
+            return []
+
+        nearby = []
+        for beacon in state.beacon_poses.values():
+            if self.is_near_beacon(state.robot_pose.x, state.robot_pose.y, beacon):
+                nearby.append(beacon)
+        return nearby
+
 
 def apply_action(state: State, action: Action, world: World) -> State:
     """Apply action to state and return new state."""
@@ -473,6 +519,7 @@ def apply_action(state: State, action: Action, world: World) -> State:
         robot_pose=new_robot_pose,
         gripper_state=new_gripper_state,
         object_poses=new_object_poses,
+        beacon_poses=state.beacon_poses,
     )
 
 
@@ -535,6 +582,7 @@ def create_initial_belief(
             robot_pose=noisy_pose,
             gripper_state=initial_state.gripper_state,
             object_poses=dict(initial_state.object_poses),
+            beacon_poses=initial_state.beacon_poses,
         )
         particles.append(particle)
 
@@ -614,6 +662,65 @@ def resample_belief(particles: list[State], weights: np.ndarray) -> Belief:
     return Belief(particles=resampled_particles, weights=uniform_weights)
 
 
+def generate_beacons(
+    config: Cover2DConfig,
+    rng: np.random.Generator,
+    existing_objects: list[tuple[float, float]],
+) -> dict[int, BeaconPose]:
+    """Generate beacon placements close to top/bottom walls only."""
+    if config.num_beacons == 0:
+        return {}
+
+    beacons: dict[int, BeaconPose] = {}
+    min_distance_from_objects = 0.5
+    max_attempts_per_beacon = 50
+    wall_zone = 0.5
+
+    for beacon_id in range(config.num_beacons):
+        attempts = 0
+
+        while attempts < max_attempts_per_beacon:
+            x = rng.uniform(config.region1_end_x, config.world_width - 0.5)
+
+            if rng.random() < 0.5:
+                y = rng.uniform(0.5, wall_zone)
+            else:
+                y = rng.uniform(
+                    config.world_height - wall_zone, config.world_height - 0.5
+                )
+
+            too_close = False
+            for obj_x, obj_y in existing_objects:
+                dist = np.sqrt((x - obj_x) ** 2 + (y - obj_y) ** 2)
+                if dist < min_distance_from_objects:
+                    too_close = True
+                    break
+            for other_beacon in beacons.values():
+                dist = np.sqrt((x - other_beacon.x) ** 2 + (y - other_beacon.y) ** 2)
+                if dist < (config.beacon_detection_radius * 2):
+                    too_close = True
+                    break
+
+            if not too_close:
+                beacons[beacon_id] = BeaconPose(
+                    beacon_id=beacon_id,
+                    x=x,
+                    y=y,
+                    physical_radius=config.beacon_physical_radius,
+                    detection_radius=config.beacon_detection_radius,
+                )
+                break
+
+            attempts += 1
+
+        if attempts >= max_attempts_per_beacon:
+            print(
+                f"Warning: Could not place beacon {beacon_id} after {max_attempts_per_beacon} attempts"  # pylint: disable=line-too-long
+            )
+
+    return beacons
+
+
 def get_mean_state(belief: Belief) -> State:
     """Compute mean state from belief particles and weights.
 
@@ -662,6 +769,7 @@ def get_mean_state(belief: Belief) -> State:
         robot_pose=mean_robot_pose,
         gripper_state=best_particle.gripper_state,
         object_poses=mean_object_poses,
+        beacon_poses=best_particle.beacon_poses,
     )
 
 
@@ -792,10 +900,21 @@ class Cover2DEnv(PlanningEnv):
             )
         }
 
+        existing_objects = [
+            (self.config.initial_robot_x, self.config.initial_robot_y),
+            (self.config.initial_block_x, self.config.initial_block_y),
+            (
+                self.config.goal_region_x + self.config.goal_region_width / 2,
+                self.config.goal_region_y + self.config.goal_region_height / 2,
+            ),
+        ]
+        beacon_poses = generate_beacons(self.config, self.rng, existing_objects)
+
         self.state = State(
             robot_pose=initial_robot_pose,
             gripper_state=initial_gripper,
             object_poses=initial_object_poses,
+            beacon_poses=beacon_poses,
         )
 
         self.belief = create_initial_belief(self.state, self.config, self.rng)
@@ -968,6 +1087,43 @@ class Cover2DEnv(PlanningEnv):
             alpha=0.3,
         )
         ax.add_patch(goal_rect)
+
+        if self.state.beacon_poses:
+            for idx, beacon in self.state.beacon_poses.items():
+                physical_circle = patches.Circle(
+                    (beacon.x, beacon.y),
+                    beacon.physical_radius,
+                    linewidth=1,
+                    edgecolor="black",
+                    facecolor="blue",
+                    alpha=1.0,
+                    zorder=5,
+                )
+                ax.add_patch(physical_circle)
+
+                detection_circle = patches.Circle(
+                    (beacon.x, beacon.y),
+                    beacon.detection_radius,
+                    linewidth=1,
+                    edgecolor="blue",
+                    facecolor="blue",
+                    alpha=0.05,
+                    linestyle="--",
+                    zorder=1,
+                )
+                ax.add_patch(detection_circle)
+
+                ax.text(
+                    beacon.x,
+                    beacon.y,
+                    str(idx),
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontsize=8,
+                    fontweight="bold",
+                    zorder=6,
+                )
 
         if show_belief:
             num_particles_to_show = min(10, len(self.belief.particles))

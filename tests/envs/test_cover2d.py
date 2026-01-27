@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from residual_controllers.envs.cover2d import (
+    Action,
     Cover2DConfig,
     Cover2DEnv,
     PickController,
@@ -12,12 +13,50 @@ from residual_controllers.envs.cover2d import (
 from residual_controllers.planner import get_plans
 
 
-def test_visualization_with_controller():
-    """Test visualization of Cover2DEnv with PickController."""
-    # Uncomment to enable visualization
+def test_beacon_visualization():
+    """Test visualization of Cover2DEnv with beacons."""
+    # # Uncomment to enable visualization
     # import matplotlib.pyplot as plt
 
-    config = Cover2DConfig(seed=42, num_particles=100)
+    config = Cover2DConfig(
+        seed=42,
+        num_particles=100,
+        num_beacons=3,
+    )
+    env = Cover2DEnv(config)
+    env.reset()
+
+    nearby = env.world.get_nearby_beacons(env.state)
+    print(f"Robot initially near {len(nearby)} beacons")
+
+    # ax = env.render(show_belief=True)
+
+    for step in range(10):
+        action = Action(dx=0.5, dy=0.0, dtheta=0.0)
+        _, _, terminal, _ = env.step(action)
+
+        nearby = env.world.get_nearby_beacons(env.state)
+        print(
+            f"Step {step}: Robot at ({env.state.robot_pose.x:.2f}, {env.state.robot_pose.y:.2f}), "  # pylint: disable=line-too-long
+            f"near {len(nearby)} beacons"
+        )
+
+        # ax = env.render(show_belief=True)
+        # plt.pause(0.3)
+        if terminal:
+            break
+
+    # plt.close()
+
+    assert len(env.state.beacon_poses) == 3
+
+
+def test_visualization_with_controller():
+    """Test visualization of Cover2DEnv with PickController."""
+    # # Uncomment to enable visualization
+    # import matplotlib.pyplot as plt
+
+    config = Cover2DConfig(seed=42, num_particles=100, num_beacons=3)
     env = Cover2DEnv(config)
     belief, _ = env.reset()
 
@@ -27,7 +66,7 @@ def test_visualization_with_controller():
         action = pick_controller.get_action(belief)
         belief, _, terminal, _ = env.step(action)
         # ax = env.render(show_belief=True)
-        # plt.pause(0.5)
+        # plt.pause(0.3)
         if terminal:
             break
 
