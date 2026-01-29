@@ -674,6 +674,19 @@ def update_belief(
     if observation.robot_pose is not None:
         for particle in predicted_belief.particles:
             particle.robot_pose = observation.robot_pose
+            if (
+                particle.gripper_state.is_holding
+                and particle.gripper_state.held_object_id is not None
+            ):
+                obj_id = particle.gripper_state.held_object_id
+                obj_x, obj_y = world.get_held_object_position(
+                    observation.robot_pose.x,
+                    observation.robot_pose.y,
+                    observation.robot_pose.theta,
+                )
+                particle.object_poses[obj_id] = ObjectPose(
+                    object_id=obj_id, x=obj_x, y=obj_y
+                )
         new_weights = np.ones(len(new_weights)) / len(new_weights)
 
     effective_sample_size = 1.0 / np.sum(new_weights**2)
