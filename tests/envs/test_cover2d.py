@@ -1,7 +1,5 @@
 """Tests for Cover2DEnv visualization."""
 
-from pathlib import Path
-
 import numpy as np
 
 from residual_controllers.envs.cover2d import (
@@ -12,7 +10,15 @@ from residual_controllers.envs.cover2d import (
     PlaceController,
     get_mean_state,
 )
-from residual_controllers.planner import get_plans
+from residual_controllers.envs.cover2d_tamp import (
+    Cover2DAbstractor,
+    Cover2DPredicates,
+    Cover2DTypes,
+    create_cover2d_operators,
+    create_cover2d_skills,
+)
+from residual_controllers.tamp.sesame_runner import run_tamp
+from residual_controllers.tamp.structs import PlanningComponents
 
 
 def test_beacon_visualization():
@@ -141,41 +147,53 @@ def test_visualization_full_episode():
     # print(f"Video saved to {video_path}")
 
 
-def test_cover2d_with_planner():
-    """Test Cover2D with SymK planner."""
+def test_cover2d_with_tamp():
+    """Test Cover2D with bilevel TAMP planner."""
     config = Cover2DConfig(seed=42, num_particles=10, transition_noise_std=0.3)
     env = Cover2DEnv(config)
-    _, _ = env.reset()
+    belief, _ = env.reset()
 
-    problem_spec = env.get_planning_problem()
-    print("Domain PDDL:")
-    print(problem_spec.domain_pddl)
-    print("\nProblem PDDL:")
-    print(problem_spec.problem_pddl)
+    types = Cover2DTypes()
+    predicates = Cover2DPredicates(types)
+    operators = create_cover2d_operators(types, predicates)
+    abstractor = Cover2DAbstractor(env.world, types, predicates)
 
-    debug_dir = Path("logs/test_pddl")
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    domain_path = debug_dir / "domain.pddl"
-    problem_path = debug_dir / "problem.pddl"
-    with open(domain_path, "w", encoding="utf-8") as f:
-        f.write(problem_spec.domain_pddl)
-    with open(problem_path, "w", encoding="utf-8") as f:
-        f.write(problem_spec.problem_pddl)
+    objects, init_atoms, goal_atoms = abstractor.reset(belief)
+    print(f"Objects: {[o.name for o in objects]}")
+    print(f"Initial atoms: {[str(a) for a in init_atoms]}")
+    print(f"Goal atoms: {[str(a) for a in goal_atoms]}")
 
-    plans = get_plans(
-        domain_file=str(domain_path),
-        problem_file=str(problem_path),
-        num_plans=5,
+    components = PlanningComponents(
+        types=types.as_set(),
+        predicates=predicates,
+        operators=operators,
+        abstractor=abstractor,
     )
 
-    print(f"\nFound {len(plans)} plans:")
-    for i, plan in enumerate(plans):
-        plan_strs = [f"{a.name}({','.join(a.args)})" for a in plan]
-        print(f"Plan {i+1}: {plan_strs}")
+    skills = create_cover2d_skills(types, predicates, operators, env.world)
 
-    print(f"\nCheck {debug_dir}/ for PDDL and SAS files")
+    def transition_fn(_belief_state, action):
+        next_belief, _, _, _ = env.step(action)
+        return next_belief
 
-    assert len(plans) > 0, "Should find at least one plan"
-    assert len(plans[0]) == 2, "Simple pick-place should have 2 actions"
-    assert plans[0][0].name == "pick", "First action should be pick"
-    assert plans[0][1].name == "place", "Second action should be place"
+    goal = abstractor.create_abstract_goal(goal_atoms, abstractor.step)
+
+    plan, graph = run_tamp(
+        components=components,
+        skills=skills,
+        initial_state=belief,
+        goal=goal,
+        state_abstractor=abstractor.step,
+        transition_function=transition_fn,
+        timeout=30.0,
+        seed=42,
+    )
+
+    assert plan is not None, "Should find a plan"
+    print("\nFound valid TAMP plan!")
+
+    if graph.abstract_action_edges:
+        abstract_actions = [action.name for _, action, _ in graph.abstract_action_edges]
+        print(f"  - Abstract plan: {' → '.join(abstract_actions)}")
+
+    print(f"  - Refined trajectory: {len(plan.actions)} low-level actions")
