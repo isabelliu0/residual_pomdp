@@ -1,0 +1,4 @@
+# CPU-only PyTorch for CI/testing
+# Install with: pip install -r requirements-torch-cpu.txt
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
