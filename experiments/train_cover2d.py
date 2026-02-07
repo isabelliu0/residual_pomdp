@@ -30,7 +30,7 @@ def train_residual(
     max_steps_per_episode: int = 100,
     save_dir: str = "trained_models",
     video_dir: str = "videos",
-    video_freq: int = 50,
+    video_freq: int = 500,
     seed: int = 0,
     num_beacons: int = 3,
     info_bonus_weight: float = 0.3,

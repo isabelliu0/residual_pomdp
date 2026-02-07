@@ -12,15 +12,6 @@ from matplotlib import patches
 from matplotlib.axes import Axes
 from tomsgeoms2d.structs import Circle, Rectangle
 
-from residual_controllers.planning_env import PlanningEnv, PlanningProblemSpec
-from residual_controllers.symbolic import (
-    ActionSchema,
-    And,
-    Atom,
-    Not,
-    Predicate,
-    ProblemSpec,
-)
 from residual_controllers.utils import (
     compute_angular_uncertainty,
     compute_se2_information_reward,
@@ -916,7 +907,7 @@ class PlaceController:
         )
 
 
-class Cover2DEnv(PlanningEnv):
+class Cover2DEnv:
     """Cover2D environment class."""
 
     def __init__(self, config: Cover2DConfig | None = None):
@@ -1040,78 +1031,6 @@ class Cover2DEnv(PlanningEnv):
             if self.world.in_goal_region(obj_pose.x, obj_pose.y):
                 return True
         return False
-
-    def get_planning_problem(self) -> PlanningProblemSpec:
-        """Generate PDDL domain and problem for the current state."""
-        assert self.state is not None, "Environment must be reset before planning"
-        is_holding = self.state.gripper_state.is_holding
-
-        predicates = [
-            Predicate("holding", ["object"]),
-            Predicate("at-goal", ["object"]),
-            Predicate("free-gripper", []),
-        ]
-        types = ["object"]
-
-        pick_action = ActionSchema(
-            name="pick",
-            parameters=[("?obj", "object")],
-            preconditions=And(
-                [
-                    Atom("free-gripper"),
-                    Not(Atom("at-goal", ["?obj"])),
-                ]
-            ),
-            effects=[
-                Atom("holding", ["?obj"]),
-                Not(Atom("free-gripper")),
-            ],
-        )
-        place_action = ActionSchema(
-            name="place",
-            parameters=[("?obj", "object")],
-            preconditions=Atom("holding", ["?obj"]),
-            effects=[
-                Atom("at-goal", ["?obj"]),
-                Atom("free-gripper"),
-                Not(Atom("holding", ["?obj"])),
-            ],
-        )
-        action_schemas = [pick_action, place_action]
-
-        object_names = [f"obj{obj_id}" for obj_id in self.state.object_poses.keys()]
-        objects = {"object": object_names}
-
-        init = []
-        if not is_holding:
-            init.append(Atom("free-gripper"))
-        if is_holding and self.state.gripper_state.held_object_id is not None:
-            held_obj_id = self.state.gripper_state.held_object_id
-            init.append(Atom("holding", [f"obj{held_obj_id}"]))
-
-        for obj_id, obj_pose in self.state.object_poses.items():
-            if self.world.in_goal_region(obj_pose.x, obj_pose.y):
-                init.append(Atom("at-goal", [f"obj{obj_id}"]))
-
-        goal_atoms: list[Atom | Not] = [
-            Atom("at-goal", [f"obj{obj_id}"])
-            for obj_id in self.state.object_poses.keys()
-        ]
-        goal = And(goal_atoms)
-
-        problem_spec = ProblemSpec(
-            predicates=predicates,
-            types=types,
-            action_schemas=action_schemas,
-            objects=objects,
-            init=init,
-            goal=goal,
-        )
-
-        domain_pddl = problem_spec.to_pddl_domain()
-        problem_pddl = problem_spec.to_pddl_problem()
-
-        return PlanningProblemSpec(domain_pddl=domain_pddl, problem_pddl=problem_pddl)
 
     def render(
         self,
