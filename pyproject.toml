@@ -13,11 +13,9 @@ dependencies = [
     "matplotlib",
     "gymnasium>=0.29.1",
     "stable_baselines3>=2.3.2",
-    "torch>=2.0.0",
     "pyyaml>=6.0.2",
     "tabulate>=0.9.0",
     "tensorboard>=2.18.0",
-    "moviepy==1.0.3",
     "tomsgeoms2d@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=toms-geoms-2d",
     "relational_structs@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=relational-structs",
     "bilevel_planning@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=bilevel-planning",
@@ -49,17 +47,17 @@ target-version = ["py311"]
 py_version = 311
 profile = "black"
 multi_line_output = 2
-skip_glob = ["venv/*", "third_party/*"]
+skip_glob = ["venv/*"]
 split_on_trailing_comma = true
 
 [tool.pylint.main]
-ignore-paths = ["third_party/.*"]
+# No ignore paths needed
 
 [tool.mypy]
 strict_equality = true
 disallow_untyped_calls = true
 warn_unreachable = true
-exclude = ["venv/*", "experiments/*", "third_party/*"]
+exclude = ["venv/*", "experiments/*"]
 
 [[tool.mypy.overrides]]
 module = [
