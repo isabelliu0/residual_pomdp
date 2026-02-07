@@ -32,6 +32,9 @@ def train_residual(
     video_dir: str = "videos",
     video_freq: int = 50,
     seed: int = 0,
+    num_beacons: int = 3,
+    info_bonus_weight: float = 0.3,
+    info_alpha: float = 1.0,
 ) -> None:
     """Train residual RL policy for PlaceController on Cover2DEnv."""
     run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -45,6 +48,9 @@ def train_residual(
         seed=seed,
         num_particles=10,
         transition_noise_std=0.3,
+        num_beacons=num_beacons,
+        info_bonus_weight=info_bonus_weight,
+        info_alpha=info_alpha,
     )
 
     observation_dim = 9
@@ -94,6 +100,9 @@ def train_residual(
     print(f"Run name: {run_name}")
     print(f"Episodes: {num_episodes}, Max steps: {max_steps_per_episode}")
     print(f"Observation dim: {observation_dim}, Action dim: {action_dim}")
+    print(
+        f"Beacons: {num_beacons}, Info bonus weight: {info_bonus_weight}, Info alpha: {info_alpha}"  # pylint: disable=line-too-long
+    )
     print(f"Save directory: {save_path}")
     print(f"Video directory: {video_path}")
     print("-" * 60)
@@ -115,9 +124,13 @@ def train_residual(
         )
 
         episode_reward = 0.0
+        episode_task_reward = 0.0
+        episode_info_reward = 0.0
         episode_steps = 0
         picked = False
         placed = False
+        trans_uncertainties = []
+        ang_uncertainties = []
 
         record_video = episode % video_freq == 0
         if record_video:
@@ -141,8 +154,13 @@ def train_residual(
                     [action.dx - base_action.dx, action.dy - base_action.dy]
                 )
 
-                belief, _, _, _ = env.step(action)
+                belief, _, _, info = env.step(action)
                 next_obs = encode_belief_cover2d(belief)
+
+                trans_uncertainties.append(info["translational_uncertainty"])
+                ang_uncertainties.append(info["angular_uncertainty"])
+                episode_task_reward += info["task_reward"]
+                episode_info_reward += info["info_reward"]
 
                 mean_state = get_mean_state(belief)
                 pick_reward = 1.0 if mean_state.gripper_state.is_holding else 0.0
@@ -180,8 +198,13 @@ def train_residual(
                     [action.dx - base_action.dx, action.dy - base_action.dy]
                 )
 
-                belief, reward, terminal, _ = env.step(action)
+                belief, reward, terminal, info = env.step(action)
                 next_obs = encode_belief_cover2d(belief)
+
+                trans_uncertainties.append(info["translational_uncertainty"])
+                ang_uncertainties.append(info["angular_uncertainty"])
+                episode_task_reward += info["task_reward"]
+                episode_info_reward += info["info_reward"]
 
                 place_trainer.store_transition(
                     obs,
@@ -219,12 +242,16 @@ def train_residual(
         place_stats = place_trainer.get_training_stats()
         success_rate = success_count / (episode + 1)
 
+        avg_trans_unc = np.mean(trans_uncertainties) if trans_uncertainties else 0.0
+        avg_ang_unc = np.mean(ang_uncertainties) if ang_uncertainties else 0.0
+
         print(
             f"Episode {episode + 1}/{num_episodes} | "
             f"Steps: {episode_steps} | "
-            f"Reward: {episode_reward:.2f} | "
+            f"Reward: {episode_reward:.2f} (task: {episode_task_reward:.2f}, info: {episode_info_reward:.2f}) | "  # pylint: disable=line-too-long
             f"Success: {placed} | "
             f"Success Rate: {success_rate:.2%} | "
+            f"Avg Uncertainty (trans/ang): {avg_trans_unc:.3f}/{avg_ang_unc:.3f} | "
             f"Pick Buffer: {pick_stats['num_transitions']} | "
             f"Place Buffer: {place_stats['num_transitions']}"
         )
@@ -254,7 +281,7 @@ if __name__ == "__main__":
         description="Train residual RL for PlaceController on Cover2D"
     )
     parser.add_argument(
-        "--num-episodes", type=int, default=1000, help="Number of training episodes"
+        "--num-episodes", type=int, default=500, help="Number of training episodes"
     )
     parser.add_argument(
         "--max-steps", type=int, default=100, help="Max steps per episode"
@@ -266,6 +293,24 @@ if __name__ == "__main__":
         help="Directory to save models",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument(
+        "--num-beacons",
+        type=int,
+        default=3,
+        help="Number of beacons for information gathering",
+    )
+    parser.add_argument(
+        "--info-bonus-weight",
+        type=float,
+        default=1.0,
+        help="Weight for information gain reward (lambda)",
+    )
+    parser.add_argument(
+        "--info-alpha",
+        type=float,
+        default=1.0,
+        help="Weight for angular vs translational uncertainty (alpha)",
+    )
 
     args = parser.parse_args()
 
@@ -274,4 +319,7 @@ if __name__ == "__main__":
         max_steps_per_episode=args.max_steps,
         save_dir=args.save_dir,
         seed=args.seed,
+        num_beacons=args.num_beacons,
+        info_bonus_weight=args.info_bonus_weight,
+        info_alpha=args.info_alpha,
     )
