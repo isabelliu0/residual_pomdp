@@ -14,7 +14,7 @@ In POMDPs, motion planners operating on mean/canonical states can produce unreli
 π*(belief) = π_base(selectCanonicalState(belief)) + π_residual(belief)
 ```
 
-The residual policy learns small corrections that improve the success rate of achieving the expected verified effects predicted by the symbolic planner (SymK).
+The residual policy learns small corrections that improve the success rate of achieving the expected verified effects predicted by the symbolic planner.
 
 ## Quick Start
 

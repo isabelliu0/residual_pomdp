@@ -49,17 +49,17 @@ target-version = ["py311"]
 py_version = 311
 profile = "black"
 multi_line_output = 2
-skip_glob = ["venv/*", "third_party/*"]
+skip_glob = ["venv/*"]
 split_on_trailing_comma = true
 
 [tool.pylint.main]
-ignore-paths = ["third_party/.*"]
+# No ignore paths needed
 
 [tool.mypy]
 strict_equality = true
 disallow_untyped_calls = true
 warn_unreachable = true
-exclude = ["venv/*", "experiments/*", "third_party/*"]
+exclude = ["venv/*", "experiments/*"]
 
 [[tool.mypy.overrides]]
 module = [
