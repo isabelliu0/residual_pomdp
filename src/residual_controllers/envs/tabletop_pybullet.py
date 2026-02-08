@@ -16,6 +16,14 @@ from pybullet_helpers.robots import create_pybullet_robot
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 from pybullet_helpers.utils import create_pybullet_block
 
+from residual_controllers.beliefs import (
+    Belief,
+    CameraIntrinsics,
+    create_initial_belief,
+    predict_belief,
+    update_belief,
+)
+
 
 @dataclass
 class CameraImage:
@@ -75,6 +83,17 @@ class TabletopPickEnv(gym.Env):
 
         self.robot: FingeredSingleArmPyBulletRobot | None = None
         self.scene: TabletopScene | None = None
+        self.belief: Belief | None = None
+
+        fov = 60
+        self.camera_intrinsics = CameraIntrinsics(
+            fx=camera_width / (2 * np.tan(np.radians(fov) / 2)),
+            fy=camera_height / (2 * np.tan(np.radians(fov) / 2)),
+            cx=camera_width / 2.0,
+            cy=camera_height / 2.0,
+            width=camera_width,
+            height=camera_height,
+        )
 
         self.observation_space = gym.spaces.Dict(
             {
@@ -261,7 +280,21 @@ class TabletopPickEnv(gym.Env):
         obs = self._get_observation()
         info = {"target_object_id": object_ids[int(target_idx)]}
 
+        camera_image = self.get_camera_image()
+        self.belief = create_initial_belief(self, camera_image, num_particles=100)
+
         return obs, info
+
+    def get_camera_pose_se3(self) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        """Get camera pose as (position, orientation) tuples."""
+        assert self.robot is not None
+        camera_link_id = self.robot.end_effector_id
+        camera_pose = get_link_pose(
+            self.robot.robot_id,
+            camera_link_id,
+            self.physics_client_id,
+        )
+        return (camera_pose.position, camera_pose.orientation)
 
     def _get_observation(self) -> dict[str, np.ndarray]:
         assert self.robot is not None
@@ -339,6 +372,7 @@ class TabletopPickEnv(gym.Env):
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
         assert self.robot is not None
+        assert self.scene is not None
 
         current_joints = self.robot.get_joint_positions()
 
@@ -353,6 +387,26 @@ class TabletopPickEnv(gym.Env):
         self.robot.set_joints(full_joints)
 
         p.stepSimulation(physicsClientId=self.physics_client_id)
+
+        if self.belief is not None:
+            self.belief = predict_belief(
+                self.belief,
+                action,
+                np.array(self.robot.joint_lower_limits[:7]),
+                np.array(self.robot.joint_upper_limits[:7]),
+                noise_std=0.01,
+            )
+
+            camera_image = self.get_camera_image()
+            camera_pose = self.get_camera_pose_se3()
+            self.belief = update_belief(
+                self.belief,
+                camera_image,
+                camera_pose,
+                self.camera_intrinsics,
+                self.scene.object_ids,
+                self.physics_client_id,
+            )
 
         obs = self._get_observation()
         reward = 0.0
