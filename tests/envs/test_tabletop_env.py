@@ -8,7 +8,7 @@ from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 def test_basic_env():
     """Basic test."""
     print("Creating environment...")
-    env = TabletopPickEnv(gui=True, num_objects=5)
+    env = TabletopPickEnv(gui=False, num_objects=5)
 
     print("Resetting environment...")
     obs, info = env.reset(seed=42)
