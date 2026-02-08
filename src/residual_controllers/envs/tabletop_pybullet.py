@@ -313,7 +313,7 @@ class TabletopPickEnv(gym.Env):
             physicsClientId=self.physics_client_id,
         )
 
-        (_, _, rgb, depth, seg) = p.getCameraImage(
+        _, _, rgb, depth, seg = p.getCameraImage(
             width=self.camera_width,
             height=self.camera_height,
             viewMatrix=view_matrix,
