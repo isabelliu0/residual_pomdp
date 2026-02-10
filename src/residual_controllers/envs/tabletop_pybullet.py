@@ -8,8 +8,8 @@ from typing import cast
 import gymnasium as gym
 import numpy as np
 import pybullet as p
-from pybullet_helpers.geometry import Pose, set_pose
-from pybullet_helpers.gui import create_gui_connection
+from pybullet_helpers.geometry import Pose, multiply_poses, set_pose
+from pybullet_helpers.gui import create_gui_connection, visualize_pose
 from pybullet_helpers.inverse_kinematics import check_body_collisions
 from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots import create_pybullet_robot
@@ -84,11 +84,15 @@ class TabletopPickEnv(gym.Env):
         self.robot: FingeredSingleArmPyBulletRobot | None = None
         self.scene: TabletopScene | None = None
         self.belief: Belief | None = None
+        self._camera_frame_ids: set[int] = set()
 
-        fov = 60
+        self.wrist_camera_offset = (0.03649966282414946, -0.034889795700641386, 0.0574)
+        self.wrist_camera_quat = (0.00252743, 0.0065769, 0.70345566, 0.71070423)
+        fx, fy = 525.0, 525.0
+
         self.camera_intrinsics = CameraIntrinsics(
-            fx=camera_width / (2 * np.tan(np.radians(fov) / 2)),
-            fy=camera_height / (2 * np.tan(np.radians(fov) / 2)),
+            fx=fx,
+            fy=fy,
             cx=camera_width / 2.0,
             cy=camera_height / 2.0,
             width=camera_width,
@@ -283,17 +287,22 @@ class TabletopPickEnv(gym.Env):
         camera_image = self.get_camera_image()
         self.belief = create_initial_belief(self, camera_image, num_particles=100)
 
+        if self.gui:
+            self._update_camera_visualization()
+
         return obs, info
 
     def get_camera_pose_se3(self) -> tuple[tuple[float, ...], tuple[float, ...]]:
         """Get camera pose as (position, orientation) tuples."""
         assert self.robot is not None
-        camera_link_id = self.robot.end_effector_id
-        camera_pose = get_link_pose(
-            self.robot.robot_id,
-            camera_link_id,
-            self.physics_client_id,
+
+        ee_pose = self.robot.get_end_effector_pose()
+        camera_to_ee_transform = Pose(
+            position=self.wrist_camera_offset,
+            orientation=self.wrist_camera_quat,
         )
+        camera_pose = multiply_poses(ee_pose, camera_to_ee_transform)
+
         return (camera_pose.position, camera_pose.orientation)
 
     def _get_observation(self) -> dict[str, np.ndarray]:
@@ -318,30 +327,38 @@ class TabletopPickEnv(gym.Env):
         }
 
     def get_camera_image(self) -> CameraImage:
-        """Get the current camera image from the robot's end-effector view."""
+        """Get RGB-D-Seg image from wrist-mounted camera."""
         assert self.robot is not None
 
-        camera_link_id = self.robot.end_effector_id
-        camera_pose = get_link_pose(
-            self.robot.robot_id,
-            camera_link_id,
-            self.physics_client_id,
+        ee_pose = self.robot.get_end_effector_pose()
+
+        camera_to_ee_transform = Pose(
+            position=self.wrist_camera_offset,
+            orientation=self.wrist_camera_quat,
         )
 
-        view_matrix = p.computeViewMatrixFromYawPitchRoll(
-            cameraTargetPosition=camera_pose.position,
-            distance=0.5,
-            yaw=0,
-            pitch=-30,
-            roll=0,
-            upAxisIndex=2,
+        camera_pose = multiply_poses(ee_pose, camera_to_ee_transform)
+
+        far = 5.0
+        camera_z_axis = np.array([0, 0, far])
+        rot_matrix = p.getMatrixFromQuaternion(camera_pose.orientation)
+        rot_matrix = np.array(rot_matrix).reshape((3, 3))
+        target_point = np.array(camera_pose.position) + rot_matrix @ camera_z_axis
+
+        view_matrix = p.computeViewMatrix(
+            cameraEyePosition=camera_pose.position,
+            cameraTargetPosition=tuple(target_point),
+            cameraUpVector=[0, 0, 1],
             physicsClientId=self.physics_client_id,
         )
 
+        fov_y = 2 * np.arctan(self.camera_height / (2 * self.camera_intrinsics.fy))
+        fov_y_deg = np.degrees(fov_y)
+
         proj_matrix = p.computeProjectionMatrixFOV(
-            fov=60,
+            fov=fov_y_deg,
             aspect=float(self.camera_width / self.camera_height),
-            nearVal=0.01,
+            nearVal=0.02,
             farVal=5.0,
             physicsClientId=self.physics_client_id,
         )
@@ -361,7 +378,7 @@ class TabletopPickEnv(gym.Env):
         depth_array = np.array(depth).reshape((self.camera_height, self.camera_width))
         seg_array = np.array(seg).reshape((self.camera_height, self.camera_width))
 
-        far, near = 5.0, 0.01
+        far, near = 5.0, 0.02
         depth_array = far * near / (far - (far - near) * depth_array)
 
         return CameraImage(
@@ -387,6 +404,9 @@ class TabletopPickEnv(gym.Env):
         self.robot.set_joints(full_joints)
 
         p.stepSimulation(physicsClientId=self.physics_client_id)
+
+        if self.gui:
+            self._update_camera_visualization()
 
         if self.belief is not None:
             self.belief = predict_belief(
@@ -415,6 +435,27 @@ class TabletopPickEnv(gym.Env):
         info: dict = {}
 
         return obs, reward, terminated, truncated, info
+
+    def _update_camera_visualization(self) -> None:
+        """Update wrist camera frame visualization in GUI."""
+        if not self.gui or self.robot is None:
+            return
+
+        for frame_id in self._camera_frame_ids:
+            p.removeUserDebugItem(frame_id, physicsClientId=self.physics_client_id)
+
+        ee_pose = self.robot.get_end_effector_pose()
+        camera_to_ee_transform = Pose(
+            position=self.wrist_camera_offset,
+            orientation=self.wrist_camera_quat,
+        )
+        camera_pose = multiply_poses(ee_pose, camera_to_ee_transform)
+
+        self._camera_frame_ids = visualize_pose(
+            camera_pose,
+            self.physics_client_id,
+            axis_length=0.1,
+        )
 
     def render(self):
         """Render the environment."""
