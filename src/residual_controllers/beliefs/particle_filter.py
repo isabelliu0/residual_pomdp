@@ -138,6 +138,10 @@ def update_belief(
     for particle in belief.particles:
         likelihood = 1.0
 
+        # NOTE: What about objects that become occluded but were previously known?
+        # i.e. obj not in detections but was in previous belief
+        # here it would not be used for belief update and
+        # they would be categorized as "unknown_objects"
         for obj_id, (detected_pose, _) in detections.items():
             particle_pose = particle.object_poses.get(obj_id)
 
