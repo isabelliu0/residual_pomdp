@@ -4,8 +4,109 @@ from __future__ import annotations
 
 import numpy as np
 import pybullet as p
+from numba import njit
 
 from residual_controllers.beliefs.structs import CameraIntrinsics
+
+
+@njit
+def _update_ray_numba(
+    grid: np.ndarray,
+    origin: np.ndarray,
+    endpoint: np.ndarray,
+    bounds: np.ndarray,
+    resolution: float,
+    update_magnitude: float,
+    log_odds_clamp: float,
+) -> None:
+    """Update voxels along a ray using DDA traversal (Numba-compiled)."""
+    direction = endpoint - origin
+    length = np.sqrt(np.sum(direction * direction))
+
+    if length < 1e-6:
+        return
+
+    direction = direction / length
+    num_steps = min(int(length / (resolution * 0.5)), 1000)
+    grid_shape = grid.shape
+
+    for i in range(num_steps):
+        t = (i / num_steps) * length
+        point = origin + t * direction
+
+        ix = int((point[0] - bounds[0, 0]) / resolution)
+        iy = int((point[1] - bounds[1, 0]) / resolution)
+        iz = int((point[2] - bounds[2, 0]) / resolution)
+
+        if (
+            0 <= ix < grid_shape[0]
+            and 0 <= iy < grid_shape[1]
+            and 0 <= iz < grid_shape[2]
+        ):
+            grid[ix, iy, iz] -= update_magnitude
+            if grid[ix, iy, iz] < -log_odds_clamp:
+                grid[ix, iy, iz] = -log_odds_clamp
+            elif grid[ix, iy, iz] > log_odds_clamp:
+                grid[ix, iy, iz] = log_odds_clamp
+
+    ex = int((endpoint[0] - bounds[0, 0]) / resolution)
+    ey = int((endpoint[1] - bounds[1, 0]) / resolution)
+    ez = int((endpoint[2] - bounds[2, 0]) / resolution)
+
+    if 0 <= ex < grid_shape[0] and 0 <= ey < grid_shape[1] and 0 <= ez < grid_shape[2]:
+        grid[ex, ey, ez] += update_magnitude
+        if grid[ex, ey, ez] < -log_odds_clamp:
+            grid[ex, ey, ez] = -log_odds_clamp
+        elif grid[ex, ey, ez] > log_odds_clamp:
+            grid[ex, ey, ez] = log_odds_clamp
+
+
+@njit
+def _unproject_and_update_depth_numba(
+    grid: np.ndarray,
+    cam_origin: np.ndarray,
+    rot_matrix: np.ndarray,
+    depth_image: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    bounds: np.ndarray,
+    resolution: float,
+    update_magnitude: float,
+    log_odds_clamp: float,
+    stride: int,
+) -> None:
+    """Unproject depth pixels and update grid (Numba-compiled).
+
+    This replaces the outer Python loops with compiled code.
+    """
+    height, width = depth_image.shape
+
+    for v in range(0, height, stride):
+        for u in range(0, width, stride):
+            d = depth_image[v, u]
+
+            if d <= 0 or not np.isfinite(d):
+                continue
+
+            x_cam = (u - cx) * d / fx
+            y_cam = (v - cy) * d / fy
+            z_cam = d
+
+            point_cam = np.array([x_cam, y_cam, z_cam], dtype=np.float32)
+
+            point_world = rot_matrix @ point_cam + cam_origin
+
+            _update_ray_numba(
+                grid,
+                cam_origin,
+                point_world,
+                bounds,
+                resolution,
+                update_magnitude,
+                log_odds_clamp,
+            )
 
 
 class LogOddsOccupancyGrid:
@@ -74,7 +175,8 @@ class LogOddsOccupancyGrid:
         ego_pose_confidence: float = 1.0,
         stride: int = 4,
     ) -> None:
-        """Update occupancy grid from depth image using ray-casting.
+        """Update occupancy grid from depth image using Numba-accelerated ray-
+        casting.
 
         Args:
             camera_pose: ((x,y,z), (qx,qy,qz,qw)) in world frame
@@ -86,61 +188,26 @@ class LogOddsOccupancyGrid:
         cam_pos, cam_quat = camera_pose
         cam_origin = np.array(cam_pos, dtype=np.float32)
 
-        height, width = depth_image.shape
-
         rot_matrix = p.getMatrixFromQuaternion(cam_quat)
         rot_matrix = np.array(rot_matrix, dtype=np.float32).reshape((3, 3))
 
-        for v in range(0, height, stride):
-            for u in range(0, width, stride):
-                d = depth_image[v, u]
-                if d <= 0 or not np.isfinite(d):
-                    continue
+        update_magnitude = 0.5 * ego_pose_confidence
 
-                point_cam = np.array(
-                    camera_intrinsics.unproject(float(u), float(v), d), dtype=np.float32
-                )
-                point_world = rot_matrix @ point_cam + cam_origin
-
-                self._update_ray(
-                    cam_origin,
-                    point_world,
-                    update_magnitude=0.5 * ego_pose_confidence,
-                )
-
-    def _update_ray(
-        self, origin: np.ndarray, endpoint: np.ndarray, update_magnitude: float
-    ) -> None:
-        """Update voxels along a ray using DDA traversal."""
-        direction = endpoint - origin
-        length = np.linalg.norm(direction)
-        if length < 1e-6:
-            return
-
-        direction = direction / length
-
-        num_steps = int(length / (self.resolution * 0.5))
-        num_steps = min(num_steps, 1000)
-
-        for i in range(num_steps):
-            t = (i / num_steps) * length
-            point = origin + t * direction
-            voxel = self._xyz_to_voxel(tuple(point))
-
-            if not self._is_valid_voxel(voxel):
-                continue
-
-            self.grid[voxel] -= update_magnitude
-            self.grid[voxel] = np.clip(
-                self.grid[voxel], -self.log_odds_clamp, self.log_odds_clamp
-            )
-
-        endpoint_voxel = self._xyz_to_voxel(tuple(endpoint))
-        if self._is_valid_voxel(endpoint_voxel):
-            self.grid[endpoint_voxel] += update_magnitude
-            self.grid[endpoint_voxel] = np.clip(
-                self.grid[endpoint_voxel], -self.log_odds_clamp, self.log_odds_clamp
-            )
+        _unproject_and_update_depth_numba(
+            self.grid,
+            cam_origin,
+            rot_matrix,
+            depth_image,
+            float(camera_intrinsics.fx),
+            float(camera_intrinsics.fy),
+            float(camera_intrinsics.cx),
+            float(camera_intrinsics.cy),
+            self.bounds,
+            self.resolution,
+            update_magnitude,
+            self.log_odds_clamp,
+            stride,
+        )
 
     def get_occupancy_probabilities(self) -> np.ndarray:
         """Convert log-odds to probabilities."""
