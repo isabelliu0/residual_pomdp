@@ -17,6 +17,7 @@ dependencies = [
     "tabulate>=0.9.0",
     "tensorboard>=2.18.0",
     "pybullet>=3.2.5",
+    "numba",
     "pybullet_helpers@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=pybullet-helpers",
     "tomsgeoms2d@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=toms-geoms-2d",
     "relational_structs@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=relational-structs",
