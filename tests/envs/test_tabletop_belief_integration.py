@@ -85,7 +85,10 @@ def test_nominal_policy_reach_target():
     """Test nominal policy that reaches toward target with visibility grid
     monitoring."""
     env = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
+    sim = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
+
     _, _ = env.reset(seed=42)
+    _, _ = sim.reset(seed=42)
 
     assert env.belief is not None
     assert env.scene is not None
@@ -104,19 +107,25 @@ def test_nominal_policy_reach_target():
 
     _print_visibility_stats(env, step=0)
 
-    robot_orientation = env.robot.get_end_effector_pose().orientation
+    robot_orientation = sim.robot.get_end_effector_pose().orientation
     approach_position = target_pos + np.array([0.0, 0.0, 0.15])
     approach_pose = Pose(tuple(approach_position), robot_orientation)
 
     print(f"\nPlanning motion to approach pose: {approach_position}")
     plan = run_smooth_motion_planning_to_pose(
         approach_pose,
-        env.robot,
-        collision_ids=[],  # [env.scene.table_id],
+        sim.robot,
+        collision_ids=set(),
         end_effector_frame_to_plan_frame=Pose.identity(),
         seed=42,
         max_time=1.0,
     )
+
+    if plan is None:
+        print("Motion planning failed")
+        env.close()
+        sim.close()
+        return
 
     print(f"Executing plan with {len(plan)} waypoints")
     current_joints = np.array(env.robot.get_joint_positions())
@@ -147,6 +156,7 @@ def test_nominal_policy_reach_target():
     assert distance_to_target < 0.3
 
     env.close()
+    sim.close()
 
 
 def _print_visibility_stats(env: TabletopPickEnv, step: int | str) -> None:
