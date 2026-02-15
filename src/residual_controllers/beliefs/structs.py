@@ -69,8 +69,10 @@ class Belief:
     environment.
     """
 
-    particles: list[TabletopState]  # N particles
+    particles: list[TabletopState]
     weights: np.ndarray  # shape (N,), normalized to sum to 1
-    known_objects: set[int]  # Objects with known poses (recently visible)
-    unknown_objects: set[int]  # Objects that are occluded
+    known_objects: set[int]  # Objects currently detected
+    occluded_objects: set[int]  # Previously known, now in occluded region
+    unknown_objects: set[int]  # Never detected or lost (expected visible but not found)
+    held_object_id: int | None = None  # Currently grasped object
     visibility_grid: LogOddsOccupancyGrid | None = None

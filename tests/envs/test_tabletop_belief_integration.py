@@ -83,7 +83,10 @@ def test_visibility_grid_updates():
 
 def test_nominal_policy_reach_target():
     """Test nominal policy that reaches toward target with visibility grid
-    monitoring."""
+    monitoring and visualization."""
+    # # Uncomment to enable visibility grid visualization
+    # from residual_controllers.beliefs import LogOddsOccupancyGrid
+
     env = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
     sim = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
 
@@ -106,6 +109,12 @@ def test_nominal_policy_reach_target():
     print(f"{'='*60}\n")
 
     _print_visibility_stats(env, step=0)
+
+    # debug_ids: list[int] = []
+    # if env.belief.visibility_grid is not None:
+    #     debug_ids = env.belief.visibility_grid.visualize(
+    #         env.physics_client_id, prob_threshold=0.45, z_range=(0.0, 0.08)
+    #     )
 
     robot_orientation = sim.robot.get_end_effector_pose().orientation
     approach_position = target_pos + np.array([0.0, 0.0, 0.15])
@@ -138,6 +147,12 @@ def test_nominal_policy_reach_target():
         _, _, _, _, _ = env.step(action)
         current_joints = np.array(env.robot.get_joint_positions())
 
+        # if i % 3 == 0 and env.belief.visibility_grid is not None:
+        #     LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
+        #     debug_ids = env.belief.visibility_grid.visualize(
+        #         env.physics_client_id, prob_threshold=0.45, z_range=(0.0, 0.08)
+        #     )
+
         if i % 5 == 0:
             _print_visibility_stats(env, step=i + 1)
 
@@ -154,6 +169,8 @@ def test_nominal_policy_reach_target():
 
     assert env.belief is not None
     assert distance_to_target < 0.3
+
+    # LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
 
     env.close()
     sim.close()

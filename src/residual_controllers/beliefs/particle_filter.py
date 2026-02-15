@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
+import pybullet as p
 
 from residual_controllers.beliefs.occupancy_grid import LogOddsOccupancyGrid
 from residual_controllers.beliefs.perception import detect_objects_from_segmentation
@@ -70,7 +73,9 @@ def create_initial_belief(
         particles=particles,
         weights=weights,
         known_objects=known_objects,
+        occluded_objects=set(),
         unknown_objects=unknown_objects,
+        held_object_id=None,
         visibility_grid=visibility_grid,
     )
 
@@ -80,14 +85,27 @@ def predict_belief(
     action: np.ndarray,
     joint_lower_limits: np.ndarray,
     joint_upper_limits: np.ndarray,
+    ee_pose_before: tuple[tuple[float, ...], tuple[float, ...]] | None = None,
+    ee_pose_after: tuple[tuple[float, ...], tuple[float, ...]] | None = None,
     noise_std: float = 0.01,
 ) -> Belief:
     """Predict belief forward after action.
 
     Applies action to joint positions (first 7 joints) and adds control
-    noise. Objects remain static (no dynamics unless grasped).
+    noise. If holding an object, updates its pose based on gripper motion.
+
+    Args:
+        belief: Current belief state
+        action: Joint position deltas (7D)
+        joint_lower_limits: Lower joint limits
+        joint_upper_limits: Upper joint limits
+        ee_pose_before: End-effector pose before action (for held object update)
+        ee_pose_after: End-effector pose after action (for held object update)
+        noise_std: Noise standard deviation for joint positions
     """
     new_particles = []
+    held_id = belief.held_object_id
+
     for particle in belief.particles:
         current_joints = np.array(particle.joint_positions[:7], dtype=np.float32)
 
@@ -99,10 +117,24 @@ def predict_belief(
 
         full_joints = tuple(noisy_joints) + particle.joint_positions[7:]
 
+        new_object_poses = particle.object_poses.copy()
+
+        if (
+            held_id is not None
+            and ee_pose_before is not None
+            and ee_pose_after is not None
+        ):
+            held_pose = particle.object_poses.get(held_id)
+            if held_pose is not None:
+                new_held_pose = transform_held_object_pose(
+                    held_pose, ee_pose_before, ee_pose_after
+                )
+                new_object_poses[held_id] = new_held_pose
+
         new_particle = TabletopState(
             joint_positions=full_joints,
             gripper_open=particle.gripper_open,
-            object_poses=particle.object_poses,
+            object_poses=new_object_poses,
         )
         new_particles.append(new_particle)
 
@@ -110,7 +142,9 @@ def predict_belief(
         particles=new_particles,
         weights=belief.weights.copy(),
         known_objects=belief.known_objects.copy(),
+        occluded_objects=belief.occluded_objects.copy(),
         unknown_objects=belief.unknown_objects.copy(),
+        held_object_id=belief.held_object_id,
         visibility_grid=belief.visibility_grid,
     )
 
@@ -123,7 +157,13 @@ def update_belief(
     object_ids: list[int],
     physics_client_id: int,
 ) -> Belief:
-    """Update belief from new camera observation."""
+    """Update belief from new camera observation.
+
+    Uses visibility grid to properly handle occlusion:
+    - detected_objects: Currently visible and detected
+    - occluded_objects: Previously known, now in occluded region (maintain pose)
+    - unknown_objects: Never detected or expected visible but not found
+    """
     detections = detect_objects_from_segmentation(
         camera_image.rgb,
         camera_image.depth,
@@ -134,14 +174,36 @@ def update_belief(
         physics_client_id,
     )
 
+    detected_objects = set(detections.keys())
+    occluded_objects: set[int] = set()
+    unknown_objects: set[int] = set()
+
+    previously_known = belief.known_objects | belief.occluded_objects
+
+    for obj_id in object_ids:
+        if obj_id in detected_objects:
+            continue
+
+        if obj_id == belief.held_object_id:
+            continue
+
+        last_known_pose = _get_last_known_pose(belief, obj_id)
+
+        if last_known_pose is None:
+            unknown_objects.add(obj_id)
+        elif belief.visibility_grid is not None and _is_position_visible(
+            belief.visibility_grid, last_known_pose[:3]
+        ):
+            unknown_objects.add(obj_id)
+        elif obj_id in previously_known:
+            occluded_objects.add(obj_id)
+        else:
+            unknown_objects.add(obj_id)
+
     likelihoods = []
     for particle in belief.particles:
         likelihood = 1.0
 
-        # NOTE: What about objects that become occluded but were previously known?
-        # i.e. obj not in detections but was in previous belief
-        # here it would not be used for belief update and
-        # they would be categorized as "unknown_objects"
         for obj_id, (detected_pose, _) in detections.items():
             particle_pose = particle.object_poses.get(obj_id)
 
@@ -150,6 +212,9 @@ def update_belief(
             else:
                 dist = pose_distance(particle_pose, detected_pose)
                 likelihood *= np.exp(-0.5 * (dist / 0.15) ** 2)
+
+        for obj_id in occluded_objects:
+            likelihood *= 0.95
 
         likelihoods.append(likelihood)
 
@@ -179,10 +244,6 @@ def update_belief(
 
     new_weights = new_weights.astype(np.float32)
 
-    known_objects = set(detections.keys())
-    all_objects_set = set(object_ids)
-    unknown_objects = all_objects_set - known_objects
-
     if belief.visibility_grid is not None:
         ego_confidence = compute_ego_pose_confidence(belief)
         belief.visibility_grid.update_from_depth(
@@ -196,29 +257,59 @@ def update_belief(
     return Belief(
         particles=new_particles,
         weights=new_weights,
-        known_objects=known_objects,
+        known_objects=detected_objects,
+        occluded_objects=occluded_objects,
         unknown_objects=unknown_objects,
+        held_object_id=belief.held_object_id,
         visibility_grid=belief.visibility_grid,
     )
+
+
+def _get_last_known_pose(belief: Belief, obj_id: int) -> tuple[float, ...] | None:
+    """Get last known pose for an object from particles (weighted mean)."""
+    poses = []
+    weights = []
+    for i, particle in enumerate(belief.particles):
+        pose = particle.object_poses.get(obj_id)
+        if pose is not None:
+            poses.append(pose)
+            weights.append(belief.weights[i])
+
+    if not poses:
+        return None
+
+    weights_arr = np.array(weights)
+    weights_arr /= weights_arr.sum()
+
+    return average_poses(poses, weights_arr)
+
+
+def _is_position_visible(
+    visibility_grid: LogOddsOccupancyGrid, position: tuple[float, ...]
+) -> bool:
+    """Check if position is in a visible (free) region of the grid."""
+    return not visibility_grid.is_occupied((position[0], position[1], position[2]))
 
 
 def get_mean_state(belief: Belief) -> TabletopState:
     """Extract mean state from belief (weighted average)."""
     mean_joints = np.average(
-        [p.joint_positions for p in belief.particles], axis=0, weights=belief.weights
+        [particle.joint_positions for particle in belief.particles],
+        axis=0,
+        weights=belief.weights,
     )
 
     mean_gripper = np.average(
-        [p.gripper_open for p in belief.particles], weights=belief.weights
+        [particle.gripper_open for particle in belief.particles], weights=belief.weights
     )
 
     all_obj_ids: set[int] = set()
-    for p in belief.particles:
-        all_obj_ids.update(p.object_poses.keys())
+    for particle in belief.particles:
+        all_obj_ids.update(particle.object_poses.keys())
 
     mean_object_poses: dict[int, SE3Pose | None] = {}
     for obj_id in all_obj_ids:
-        poses = [p.object_poses.get(obj_id) for p in belief.particles]
+        poses = [particle.object_poses.get(obj_id) for particle in belief.particles]
         if all(pose is not None for pose in poses):
             mean_pose = average_poses(poses, belief.weights)  # type: ignore
             mean_object_poses[obj_id] = mean_pose
@@ -255,12 +346,60 @@ def pose_distance(pose1: tuple[float, ...], pose2: tuple[float, ...]) -> float:
     return float(np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2))
 
 
-def average_poses(poses: list[tuple[float, ...]], weights: np.ndarray) -> SE3Pose:
+def transform_held_object_pose(
+    object_pose: tuple[float, ...],
+    ee_pose_before: tuple[tuple[float, ...], tuple[float, ...]],
+    ee_pose_after: tuple[tuple[float, ...], tuple[float, ...]],
+) -> SE3Pose:
+    """Transform held object pose based on gripper motion.
+
+    Computes how the object moves given the change in end-effector pose,
+    assuming the object is rigidly attached to the gripper.
+    """
+    obj_pos = np.array(object_pose[:3])
+    obj_quat = object_pose[3:7]
+
+    ee_pos_before = np.array(ee_pose_before[0])
+    ee_quat_before = ee_pose_before[1]
+    ee_pos_after = np.array(ee_pose_after[0])
+    ee_quat_after = ee_pose_after[1]
+
+    ee_rot_before = np.array(p.getMatrixFromQuaternion(ee_quat_before)).reshape(3, 3)
+    ee_rot_after = np.array(p.getMatrixFromQuaternion(ee_quat_after)).reshape(3, 3)
+
+    obj_in_ee = ee_rot_before.T @ (obj_pos - ee_pos_before)
+
+    new_obj_pos = ee_rot_after @ obj_in_ee + ee_pos_after
+
+    _, ee_quat_before_inv = p.invertTransform([0, 0, 0], ee_quat_before)
+    _, obj_in_ee_quat = p.multiplyTransforms(
+        [0, 0, 0], ee_quat_before_inv, [0, 0, 0], obj_quat
+    )
+    _, new_obj_quat = p.multiplyTransforms(
+        [0, 0, 0], ee_quat_after, [0, 0, 0], obj_in_ee_quat
+    )
+
+    return (
+        float(new_obj_pos[0]),
+        float(new_obj_pos[1]),
+        float(new_obj_pos[2]),
+        float(new_obj_quat[0]),
+        float(new_obj_quat[1]),
+        float(new_obj_quat[2]),
+        float(new_obj_quat[3]),
+    )
+
+
+def average_poses(poses: Sequence[tuple[float, ...]], weights: np.ndarray) -> SE3Pose:
     """Weighted average of SE(3) poses."""
-    positions = np.array([(p[0], p[1], p[2]) for p in poses], dtype=np.float32)
+    positions = np.array(
+        [(pose[0], pose[1], pose[2]) for pose in poses], dtype=np.float32
+    )
     mean_pos = np.average(positions, axis=0, weights=weights)
 
-    orientations = np.array([(p[3], p[4], p[5], p[6]) for p in poses], dtype=np.float32)
+    orientations = np.array(
+        [(pose[3], pose[4], pose[5], pose[6]) for pose in poses], dtype=np.float32
+    )
     mean_quat = np.average(orientations, axis=0, weights=weights)
     mean_quat /= np.linalg.norm(mean_quat)
 
@@ -278,7 +417,7 @@ def average_poses(poses: list[tuple[float, ...]], weights: np.ndarray) -> SE3Pos
 def compute_ego_pose_confidence(belief: Belief, threshold: float = 0.01) -> float:
     """Compute confidence in current camera pose from joint uncertainty."""
     joint_particles = np.array(
-        [p.joint_positions for p in belief.particles], dtype=np.float32
+        [particle.joint_positions for particle in belief.particles], dtype=np.float32
     )
     joint_cov = np.cov(joint_particles.T, aweights=belief.weights)
 
