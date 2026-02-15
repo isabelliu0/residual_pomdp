@@ -233,3 +233,86 @@ class LogOddsOccupancyGrid:
 
         prob = 1.0 / (1.0 + np.exp(-self.grid[voxel]))
         return bool(prob > 0.5)
+
+    def get_unobserved_voxels(
+        self, prob_threshold: float = 0.4
+    ) -> list[tuple[float, float, float]]:
+        """Return xyz of voxels with occupancy prob >= threshold."""
+        probs = self.get_occupancy_probabilities()
+        unobserved_mask = probs >= prob_threshold
+
+        coords = []
+        for ix, iy, iz in zip(*np.where(unobserved_mask)):
+            xyz = self._voxel_to_xyz((int(ix), int(iy), int(iz)))
+            coords.append(xyz)
+
+        return coords
+
+    def visualize(
+        self,
+        physics_client_id: int,
+        prob_threshold: float = 0.4,
+        color: tuple[float, float, float] = (0.3, 0.5, 1.0),
+        line_width: float = 1.0,
+        max_voxels: int = 2000,
+        z_range: tuple[float, float] | None = (0.0, 0.06),
+    ) -> list[int]:
+        """Draw unobserved voxels as wireframe cubes."""
+        unobserved = self.get_unobserved_voxels(prob_threshold)
+
+        if z_range is not None:
+            unobserved = [
+                (x, y, z) for x, y, z in unobserved if z_range[0] <= z <= z_range[1]
+            ]
+
+        if len(unobserved) > max_voxels:
+            indices = np.random.choice(len(unobserved), max_voxels, replace=False)
+            unobserved = [unobserved[i] for i in indices]
+
+        debug_ids = []
+        half_size = self.resolution / 2
+
+        for x, y, z in unobserved:
+            corners = [
+                (x - half_size, y - half_size, z - half_size),
+                (x + half_size, y - half_size, z - half_size),
+                (x + half_size, y + half_size, z - half_size),
+                (x - half_size, y + half_size, z - half_size),
+                (x - half_size, y - half_size, z + half_size),
+                (x + half_size, y - half_size, z + half_size),
+                (x + half_size, y + half_size, z + half_size),
+                (x - half_size, y + half_size, z + half_size),
+            ]
+
+            edges = [
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (3, 0),
+                (4, 5),
+                (5, 6),
+                (6, 7),
+                (7, 4),
+                (0, 4),
+                (1, 5),
+                (2, 6),
+                (3, 7),
+            ]
+
+            for i, j in edges:
+                debug_id = p.addUserDebugLine(
+                    corners[i],
+                    corners[j],
+                    lineColorRGB=color,
+                    lineWidth=line_width,
+                    physicsClientId=physics_client_id,
+                )
+                debug_ids.append(debug_id)
+
+        return debug_ids
+
+    @staticmethod
+    def clear_visualization(debug_ids: list[int], physics_client_id: int) -> None:
+        """Remove previously drawn debug items."""
+        for debug_id in debug_ids:
+            p.removeUserDebugItem(debug_id, physicsClientId=physics_client_id)

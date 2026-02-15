@@ -464,6 +464,14 @@ class TabletopPickEnv(gym.Env):
         camera_image = self.get_camera_image()
         return camera_image.rgb
 
+    def get_collision_ids(self) -> set[int]:
+        """Get IDs for collision checking during motion planning."""
+        if self.scene is None:
+            return set()
+        ids = {self.scene.table_id}
+        ids.update(self.scene.object_ids)
+        return ids
+
     def close(self):
         if self.physics_client_id is not None:
             p.disconnect(physicsClientId=self.physics_client_id)
