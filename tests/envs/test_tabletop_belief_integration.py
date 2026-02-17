@@ -1,9 +1,13 @@
 """Integration test for end-to-end belief tracking in TabletopPickEnv."""
 
+import os
 import time
 
+import imageio
 import numpy as np
 import pybullet as p
+from gymnasium.wrappers import RecordVideo
+from pybullet_helpers.camera import capture_image
 from pybullet_helpers.geometry import Pose
 from pybullet_helpers.motion_planning import run_smooth_motion_planning_to_pose
 
@@ -17,38 +21,43 @@ from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 def test_nominal_policy_reach_target():
     """Test nominal policy that reaches toward target with visibility grid
     monitoring and visualization."""
-    env = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
+    base_env = TabletopPickEnv(
+        gui=False, num_objects=3, occlusion_prob=0.5, render_mode="rgb_array_external"
+    )
+    env = RecordVideo(base_env, "videos/belief-integration-test")
     sim = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
 
     _, _ = env.reset(seed=42)
     _, _ = sim.reset(seed=42)
 
-    assert env.belief is not None
-    assert env.scene is not None
+    assert base_env.belief is not None
+    assert base_env.scene is not None
 
-    target_id = env.scene.object_ids[env.scene.target_idx]
+    target_id = base_env.scene.object_ids[base_env.scene.target_idx]
     target_pose_ground_truth = p.getBasePositionAndOrientation(
-        target_id, physicsClientId=env.physics_client_id
+        target_id, physicsClientId=base_env.physics_client_id
     )
     target_pos = np.array(target_pose_ground_truth[0])
 
     print(f"\n{'='*60}")
     print(f"Target object ID: {target_id}")
     print(f"Target position (ground truth): {target_pos}")
-    print(f"Initial known objects: {len(env.belief.known_objects)}/{env.num_objects}")
+    print(
+        f"Initial known objects: {len(base_env.belief.known_objects)}/{base_env.num_objects}"  # pylint: disable=line-too-long
+    )
     print(f"{'='*60}\n")
 
-    _print_visibility_stats(env, step=0)
+    _print_visibility_stats(base_env, step=0)
 
-    debug_ids: list[int] = []
+    # debug_ids: list[int] = []
     # occupied_debug_ids: list[int] = []
-    if env.belief.visibility_grid is not None:
-        debug_ids = env.belief.visibility_grid.visualize(
-            env.physics_client_id, z_range=(0.0, 0.15)
-        )
-        # occupied_debug_ids = env.belief.visibility_grid.visualize_occupied(
-        #     env.physics_client_id, z_range=(0.0, 0.15)
-        # )
+    # if base_env.belief.visibility_grid is not None:
+    # debug_ids = base_env.belief.visibility_grid.visualize(
+    #     base_env.physics_client_id, z_range=(0.0, 0.15)
+    # )
+    # occupied_debug_ids = base_env.belief.visibility_grid.visualize_occupied(
+    #     base_env.physics_client_id, z_range=(0.0, 0.15)
+    # )
 
     robot_orientation = sim.robot.get_end_effector_pose().orientation
     approach_position = target_pos + np.array([0.0, 0.0, 0.15])
@@ -71,45 +80,45 @@ def test_nominal_policy_reach_target():
         return
 
     print(f"Executing plan with {len(plan)} waypoints")
-    current_joints = np.array(env.robot.get_joint_positions())
+    current_joints = np.array(base_env.robot.get_joint_positions())
 
     for i, target_joints in enumerate(plan):
         joint_delta = np.subtract(target_joints[:7], current_joints[:7])
         action = joint_delta[:7]
-        action = np.clip(action, env.action_space.low, env.action_space.high)
+        action = np.clip(action, base_env.action_space.low, base_env.action_space.high)
 
         _, _, _, _, _ = env.step(action)
-        current_joints = np.array(env.robot.get_joint_positions())
+        current_joints = np.array(base_env.robot.get_joint_positions())
 
-        LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
-        # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, env.physics_client_id)   # pylint: disable=line-too-long
-        debug_ids = env.belief.visibility_grid.visualize(
-            env.physics_client_id, z_range=(0.0, 0.15)
-        )
-        # occupied_debug_ids = env.belief.visibility_grid.visualize_occupied(
-        #     env.physics_client_id, z_range=(0.0, 0.15)
+        # LogOddsOccupancyGrid.clear_visualization(debug_ids, base_env.physics_client_id)
+        # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, base_env.physics_client_id)  # pylint: disable=line-too-long
+        # debug_ids = base_env.belief.visibility_grid.visualize(
+        #     base_env.physics_client_id, z_range=(0.0, 0.15)
+        # )
+        # occupied_debug_ids = base_env.belief.visibility_grid.visualize_occupied(
+        #     base_env.physics_client_id, z_range=(0.0, 0.15)
         # )
         time.sleep(0.5)
 
         if i % 5 == 0:
-            _print_visibility_stats(env, step=i + 1)
+            _print_visibility_stats(base_env, step=i + 1)
 
     print(f"\n{'='*60}")
     print("FINAL STATE")
     print(f"{'='*60}")
-    _print_visibility_stats(env, step="FINAL")
+    _print_visibility_stats(base_env, step="FINAL")
 
-    final_ee_pos = np.array(env.robot.get_end_effector_pose().position)
+    final_ee_pos = np.array(base_env.robot.get_end_effector_pose().position)
     distance_to_target = np.linalg.norm(final_ee_pos - target_pos)
     print(f"Distance to target: {distance_to_target:.3f}m")
-    print(f"Known objects: {len(env.belief.known_objects)}/{env.num_objects}")
+    print(f"Known objects: {len(base_env.belief.known_objects)}/{base_env.num_objects}")
     print(f"{'='*60}\n")
 
-    assert env.belief is not None
+    assert base_env.belief is not None
     assert distance_to_target < 0.3
 
-    LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
-    # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, env.physics_client_id)
+    # LogOddsOccupancyGrid.clear_visualization(debug_ids, base_env.physics_client_id)
+    # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, base_env.physics_client_id)  # pylint: disable=line-too-long
 
     env.close()
     sim.close()
@@ -161,6 +170,32 @@ def test_particle_filter_diagnostics():
     assert env.belief is not None
     assert env.scene is not None
 
+    os.makedirs("videos", exist_ok=True)
+    external_writer = imageio.get_writer(
+        "videos/belief-integration-test/particle_filter_external.mp4",
+        fps=10,
+        codec="libx264",
+    )
+    wrist_writer = imageio.get_writer(
+        "videos/belief-integration-test/particle_filter_wrist.mp4",
+        fps=10,
+        codec="libx264",
+    )
+
+    def capture_frames():
+        external_frame = capture_image(
+            env.physics_client_id,
+            camera_distance=1.5,
+            camera_yaw=50,
+            camera_pitch=-35,
+            camera_target=(0.5, 0.0, 0.0),
+            image_width=640,
+            image_height=480,
+        )
+        external_writer.append_data(external_frame)
+        wrist_frame = env.get_camera_image().rgb
+        wrist_writer.append_data(wrist_frame)
+
     print(f"\n{'='*70}")
     print("PARTICLE FILTER DIAGNOSTICS TEST")
     print(f"{'='*70}")
@@ -174,6 +209,8 @@ def test_particle_filter_diagnostics():
         debug_ids = env.belief.visibility_grid.visualize(
             env.physics_client_id, z_range=(0.0, 0.15)
         )
+
+    capture_frames()
 
     scan_actions = [
         np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0]),
@@ -278,6 +315,7 @@ def test_particle_filter_diagnostics():
             resampling_count += 1
 
         _, _, _, _, _ = env.step(action)
+        capture_frames()
 
         LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
         debug_ids = env.belief.visibility_grid.visualize(
@@ -295,4 +333,6 @@ def test_particle_filter_diagnostics():
 
     LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
 
+    external_writer.close()
+    wrist_writer.close()
     env.close()

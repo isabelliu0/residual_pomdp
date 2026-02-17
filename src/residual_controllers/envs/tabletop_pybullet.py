@@ -8,6 +8,7 @@ from typing import cast
 import gymnasium as gym
 import numpy as np
 import pybullet as p
+from pybullet_helpers.camera import capture_image
 from pybullet_helpers.geometry import Pose, multiply_poses, set_pose
 from pybullet_helpers.gui import create_gui_connection, visualize_pose
 from pybullet_helpers.inverse_kinematics import check_body_collisions
@@ -49,7 +50,7 @@ class TabletopScene:
 class TabletopPickEnv(gym.Env):
     """Tabletop manipulation: robot must pick a target object from a cluttered table."""
 
-    metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
+    metadata = {"render_modes": ["rgb_array", "rgb_array_external"], "render_fps": 30}
 
     def __init__(
         self,
@@ -58,6 +59,7 @@ class TabletopPickEnv(gym.Env):
         occlusion_prob: float = 0.7,
         camera_width: int = 640,
         camera_height: int = 480,
+        render_mode: str | None = None,
     ):
         super().__init__()
 
@@ -66,6 +68,7 @@ class TabletopPickEnv(gym.Env):
         self.occlusion_prob = occlusion_prob
         self.camera_width = camera_width
         self.camera_height = camera_height
+        self.render_mode = render_mode
 
         if gui:
             self.physics_client_id = create_gui_connection()
@@ -454,10 +457,20 @@ class TabletopPickEnv(gym.Env):
 
     def render(self):
         """Render the environment."""
-        if self.gui:
-            return None
-        camera_image = self.get_camera_image()
-        return camera_image.rgb
+        if self.render_mode == "rgb_array":
+            camera_image = self.get_camera_image()
+            return camera_image.rgb
+        if self.render_mode == "rgb_array_external":
+            return capture_image(
+                self.physics_client_id,
+                camera_distance=1.5,
+                camera_yaw=50,
+                camera_pitch=-35,
+                camera_target=(0.5, 0.0, 0.0),
+                image_width=640,
+                image_height=480,
+            )
+        return None
 
     def get_collision_ids(self) -> set[int]:
         """Get IDs for collision checking during motion planning."""
