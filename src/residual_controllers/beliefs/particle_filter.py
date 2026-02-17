@@ -588,6 +588,28 @@ def get_mean_state(belief: Belief) -> TabletopState:
     )
 
 
+def get_mean_object_position(belief: Belief, object_id: int) -> np.ndarray | None:
+    """Get weighted average position (xyz) for a specific object.
+
+    Returns None if no particles have a pose for this object.
+    """
+    positions: list[list[float]] = []
+    weights: list[float] = []
+    for particle, weight in zip(belief.particles, belief.weights):
+        pose = particle.object_poses.get(object_id)
+        if pose is not None:
+            positions.append([pose[0], pose[1], pose[2]])
+            weights.append(weight)
+
+    if not positions:
+        return None
+
+    positions_arr = np.array(positions, dtype=np.float32)
+    weights_arr = np.array(weights, dtype=np.float32)
+    weights_arr = weights_arr / weights_arr.sum()
+    return np.average(positions_arr, axis=0, weights=weights_arr)
+
+
 def add_pose_noise(pose: tuple[float, ...], pos_std: float, rot_std: float) -> SE3Pose:
     """Add Gaussian noise to SE(3) pose."""
     x, y, z, qx, qy, qz, qw = pose
