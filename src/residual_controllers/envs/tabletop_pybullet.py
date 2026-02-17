@@ -293,16 +293,20 @@ class TabletopPickEnv(gym.Env):
 
         return obs, info
 
+    @property
+    def camera_to_ee_transform(self) -> Pose:
+        """Get transform from end-effector to wrist camera."""
+        return Pose(
+            position=self.wrist_camera_offset,
+            orientation=self.wrist_camera_quat,
+        )
+
     def get_camera_pose_se3(self) -> tuple[tuple[float, ...], tuple[float, ...]]:
         """Get camera pose as (position, orientation) tuples."""
         assert self.robot is not None
 
         ee_pose = self.robot.get_end_effector_pose()
-        camera_to_ee_transform = Pose(
-            position=self.wrist_camera_offset,
-            orientation=self.wrist_camera_quat,
-        )
-        camera_pose = multiply_poses(ee_pose, camera_to_ee_transform)
+        camera_pose = multiply_poses(ee_pose, self.camera_to_ee_transform)
 
         return (camera_pose.position, camera_pose.orientation)
 
@@ -332,13 +336,7 @@ class TabletopPickEnv(gym.Env):
         assert self.robot is not None
 
         ee_pose = self.robot.get_end_effector_pose()
-
-        camera_to_ee_transform = Pose(
-            position=self.wrist_camera_offset,
-            orientation=self.wrist_camera_quat,
-        )
-
-        camera_pose = multiply_poses(ee_pose, camera_to_ee_transform)
+        camera_pose = multiply_poses(ee_pose, self.camera_to_ee_transform)
 
         far = 5.0
         camera_z_axis = np.array([0, 0, far])
@@ -446,11 +444,7 @@ class TabletopPickEnv(gym.Env):
             p.removeUserDebugItem(frame_id, physicsClientId=self.physics_client_id)
 
         ee_pose = self.robot.get_end_effector_pose()
-        camera_to_ee_transform = Pose(
-            position=self.wrist_camera_offset,
-            orientation=self.wrist_camera_quat,
-        )
-        camera_pose = multiply_poses(ee_pose, camera_to_ee_transform)
+        camera_pose = multiply_poses(ee_pose, self.camera_to_ee_transform)
 
         self._camera_frame_ids = visualize_pose(
             camera_pose,
