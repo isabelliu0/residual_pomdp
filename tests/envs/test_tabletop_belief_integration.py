@@ -22,7 +22,7 @@ def test_nominal_policy_reach_target():
     """Test nominal policy that reaches toward target with visibility grid
     monitoring and visualization."""
     base_env = TabletopPickEnv(
-        gui=False, num_objects=3, occlusion_prob=0.5, render_mode="rgb_array_external"
+        gui=False, num_objects=3, occlusion_prob=0.5, render_mode="rgb_array"
     )
     env = RecordVideo(base_env, "videos/belief-integration-test")
     sim = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
@@ -49,15 +49,15 @@ def test_nominal_policy_reach_target():
 
     _print_visibility_stats(base_env, step=0)
 
-    # debug_ids: list[int] = []
+    debug_ids: list[int] = []
     # occupied_debug_ids: list[int] = []
-    # if base_env.belief.visibility_grid is not None:
-    # debug_ids = base_env.belief.visibility_grid.visualize(
-    #     base_env.physics_client_id, z_range=(0.0, 0.15)
-    # )
-    # occupied_debug_ids = base_env.belief.visibility_grid.visualize_occupied(
-    #     base_env.physics_client_id, z_range=(0.0, 0.15)
-    # )
+    if base_env.belief.visibility_grid is not None:
+        debug_ids = base_env.belief.visibility_grid.visualize(
+            base_env.physics_client_id, z_range=(0.0, 0.15)
+        )
+        # occupied_debug_ids = base_env.belief.visibility_grid.visualize_occupied(
+        #     base_env.physics_client_id, z_range=(0.0, 0.15)
+        # )
 
     robot_orientation = sim.robot.get_end_effector_pose().orientation
     approach_position = target_pos + np.array([0.0, 0.0, 0.15])
@@ -90,11 +90,11 @@ def test_nominal_policy_reach_target():
         _, _, _, _, _ = env.step(action)
         current_joints = np.array(base_env.robot.get_joint_positions())
 
-        # LogOddsOccupancyGrid.clear_visualization(debug_ids, base_env.physics_client_id)
+        LogOddsOccupancyGrid.clear_visualization(debug_ids, base_env.physics_client_id)
         # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, base_env.physics_client_id)  # pylint: disable=line-too-long
-        # debug_ids = base_env.belief.visibility_grid.visualize(
-        #     base_env.physics_client_id, z_range=(0.0, 0.15)
-        # )
+        debug_ids = base_env.belief.visibility_grid.visualize(
+            base_env.physics_client_id, z_range=(0.0, 0.15)
+        )
         # occupied_debug_ids = base_env.belief.visibility_grid.visualize_occupied(
         #     base_env.physics_client_id, z_range=(0.0, 0.15)
         # )
@@ -117,7 +117,7 @@ def test_nominal_policy_reach_target():
     assert base_env.belief is not None
     assert distance_to_target < 0.3
 
-    # LogOddsOccupancyGrid.clear_visualization(debug_ids, base_env.physics_client_id)
+    LogOddsOccupancyGrid.clear_visualization(debug_ids, base_env.physics_client_id)
     # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, base_env.physics_client_id)  # pylint: disable=line-too-long
 
     env.close()

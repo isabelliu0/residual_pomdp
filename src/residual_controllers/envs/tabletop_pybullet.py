@@ -52,6 +52,17 @@ class TabletopPickEnv(gym.Env):
 
     metadata = {"render_modes": ["rgb_array", "rgb_array_external"], "render_fps": 30}
 
+    # Home joint positions from TAMPURA - better wrist camera view for table observation
+    home_joint_positions = [
+        -0.0806406098426434,
+        -1.6722951504174777,
+        0.07069076842695393,
+        -2.7449419709102822,
+        0.08184716251979611,
+        1.7516337599063168,
+        0.7849295270972781,
+    ]
+
     def __init__(
         self,
         gui: bool = False,
@@ -271,6 +282,8 @@ class TabletopPickEnv(gym.Env):
             FingeredSingleArmPyBulletRobot,
             create_pybullet_robot("panda", self.physics_client_id),
         )
+        gripper_pos = self.robot.get_joint_positions()[7:]
+        self.robot.set_joints(self.home_joint_positions + list(gripper_pos))
 
         table_id = self._create_table()
         object_ids, colors, target_idx = self._spawn_objects_with_occlusion()
@@ -297,19 +310,30 @@ class TabletopPickEnv(gym.Env):
         return obs, info
 
     @property
-    def camera_to_ee_transform(self) -> Pose:
-        """Get transform from end-effector to wrist camera."""
+    def camera_to_hand_transform(self) -> Pose:
+        """Get transform from panda_hand link to wrist camera."""
         return Pose(
             position=self.wrist_camera_offset,
             orientation=self.wrist_camera_quat,
         )
 
+    @property
+    def camera_to_ee_transform(self) -> Pose:
+        """Alias for camera_to_hand_transform (for backward compatibility)."""
+        return self.camera_to_hand_transform
+
+    def _get_hand_pose(self) -> Pose:
+        """Get pose of panda_hand link (where camera is mounted)."""
+        assert self.robot is not None
+        hand_link_id = self.robot.link_from_name("panda_hand")
+        return get_link_pose(self.robot.robot_id, hand_link_id, self.physics_client_id)
+
     def get_camera_pose_se3(self) -> tuple[tuple[float, ...], tuple[float, ...]]:
         """Get camera pose as (position, orientation) tuples."""
         assert self.robot is not None
 
-        ee_pose = self.robot.get_end_effector_pose()
-        camera_pose = multiply_poses(ee_pose, self.camera_to_ee_transform)
+        hand_pose = self._get_hand_pose()
+        camera_pose = multiply_poses(hand_pose, self.camera_to_hand_transform)
 
         return (camera_pose.position, camera_pose.orientation)
 
@@ -338,8 +362,8 @@ class TabletopPickEnv(gym.Env):
         """Get RGB-D-Seg image from wrist-mounted camera."""
         assert self.robot is not None
 
-        ee_pose = self.robot.get_end_effector_pose()
-        camera_pose = multiply_poses(ee_pose, self.camera_to_ee_transform)
+        hand_pose = self._get_hand_pose()
+        camera_pose = multiply_poses(hand_pose, self.camera_to_hand_transform)
 
         far = 5.0
         camera_z_axis = np.array([0, 0, far])
@@ -446,8 +470,8 @@ class TabletopPickEnv(gym.Env):
         for frame_id in self._camera_frame_ids:
             p.removeUserDebugItem(frame_id, physicsClientId=self.physics_client_id)
 
-        ee_pose = self.robot.get_end_effector_pose()
-        camera_pose = multiply_poses(ee_pose, self.camera_to_ee_transform)
+        hand_pose = self._get_hand_pose()
+        camera_pose = multiply_poses(hand_pose, self.camera_to_hand_transform)
 
         self._camera_frame_ids = visualize_pose(
             camera_pose,
