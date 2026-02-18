@@ -53,8 +53,8 @@ class BeliefConfig:
     """Configuration for particle filter belief tracking."""
 
     # Occupancy grid thresholds
-    free_max: float = 0.3
-    occupied_min: float = 0.8
+    free_max: float = 0.4
+    occupied_min: float = 0.6
 
     # Occupancy grid ray-casting
     grid_stride: int = 20
