@@ -6,7 +6,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
-import pybullet as p
 
 from residual_controllers.beliefs.occupancy_grid import LogOddsOccupancyGrid
 from residual_controllers.beliefs.perception import detect_objects_from_segmentation
@@ -140,18 +139,14 @@ def predict_belief(
     action: np.ndarray,
     joint_lower_limits: np.ndarray,
     joint_upper_limits: np.ndarray,
-    ee_pose_before: tuple[tuple[float, ...], tuple[float, ...]] | None = None,
-    ee_pose_after: tuple[tuple[float, ...], tuple[float, ...]] | None = None,
     noise_std: float = 0.01,
 ) -> Belief:
     """Predict belief forward after action.
 
     Applies action to joint positions (first 7 joints) and adds control
-    noise. If holding an object, updates its pose based on gripper
-    motion.
+    noise. Object poses are unchanged (static objects).
     """
     new_particles = []
-    held_id = belief.held_object_id
 
     for particle in belief.particles:
         current_joints = np.array(particle.joint_positions[:7], dtype=np.float32)
@@ -164,24 +159,10 @@ def predict_belief(
 
         full_joints = tuple(noisy_joints) + particle.joint_positions[7:]
 
-        new_object_poses = particle.object_poses.copy()
-
-        if (
-            held_id is not None
-            and ee_pose_before is not None
-            and ee_pose_after is not None
-        ):
-            held_pose = particle.object_poses.get(held_id)
-            if held_pose is not None:
-                new_held_pose = transform_held_object_pose(
-                    held_pose, ee_pose_before, ee_pose_after
-                )
-                new_object_poses[held_id] = new_held_pose
-
         new_particle = TabletopState(
             joint_positions=full_joints,
             gripper_open=particle.gripper_open,
-            object_poses=new_object_poses,
+            object_poses=particle.object_poses.copy(),
         )
         new_particles.append(new_particle)
 
@@ -227,10 +208,6 @@ def update_belief(
     for obj_id in object_ids:
         if obj_id in detected_objects:
             visibility_status[obj_id] = "detected"
-            continue
-
-        if obj_id == belief.held_object_id:
-            visibility_status[obj_id] = "held"
             continue
 
         last_known_pose = _get_last_known_pose(belief, obj_id)
@@ -631,50 +608,6 @@ def pose_distance(pose1: tuple[float, ...], pose2: tuple[float, ...]) -> float:
     x1, y1, z1 = pose1[0], pose1[1], pose1[2]
     x2, y2, z2 = pose2[0], pose2[1], pose2[2]
     return float(np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2))
-
-
-def transform_held_object_pose(
-    object_pose: tuple[float, ...],
-    ee_pose_before: tuple[tuple[float, ...], tuple[float, ...]],
-    ee_pose_after: tuple[tuple[float, ...], tuple[float, ...]],
-) -> SE3Pose:
-    """Transform held object pose based on gripper motion.
-
-    Computes how the object moves given the change in end-effector pose,
-    assuming the object is rigidly attached to the gripper.
-    """
-    obj_pos = np.array(object_pose[:3])
-    obj_quat = object_pose[3:7]
-
-    ee_pos_before = np.array(ee_pose_before[0])
-    ee_quat_before = ee_pose_before[1]
-    ee_pos_after = np.array(ee_pose_after[0])
-    ee_quat_after = ee_pose_after[1]
-
-    ee_rot_before = np.array(p.getMatrixFromQuaternion(ee_quat_before)).reshape(3, 3)
-    ee_rot_after = np.array(p.getMatrixFromQuaternion(ee_quat_after)).reshape(3, 3)
-
-    obj_in_ee = ee_rot_before.T @ (obj_pos - ee_pos_before)
-
-    new_obj_pos = ee_rot_after @ obj_in_ee + ee_pos_after
-
-    _, ee_quat_before_inv = p.invertTransform([0, 0, 0], ee_quat_before)
-    _, obj_in_ee_quat = p.multiplyTransforms(
-        [0, 0, 0], ee_quat_before_inv, [0, 0, 0], obj_quat
-    )
-    _, new_obj_quat = p.multiplyTransforms(
-        [0, 0, 0], ee_quat_after, [0, 0, 0], obj_in_ee_quat
-    )
-
-    return (
-        float(new_obj_pos[0]),
-        float(new_obj_pos[1]),
-        float(new_obj_pos[2]),
-        float(new_obj_quat[0]),
-        float(new_obj_quat[1]),
-        float(new_obj_quat[2]),
-        float(new_obj_quat[3]),
-    )
 
 
 def average_poses(poses: Sequence[tuple[float, ...]], weights: np.ndarray) -> SE3Pose:

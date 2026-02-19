@@ -495,6 +495,8 @@ class TabletopPickEnv(gym.Env):
             self._update_camera_visualization()
 
         if self.belief is not None:
+            self.belief.held_object_id = self._held_object_id
+
             self.belief = predict_belief(
                 self.belief,
                 joint_delta,
@@ -574,7 +576,7 @@ class TabletopPickEnv(gym.Env):
                 + (ee_pose.position[1] - obj_pose.position[1]) ** 2
                 + (ee_pose.position[2] - obj_pose.position[2]) ** 2
             )
-            if dist_sq < 1e-3:
+            if dist_sq < 1e-4:
                 self._held_object_id = obj_id
                 self._grasp_transform = multiply_poses(ee_pose.invert(), obj_pose)
                 break
