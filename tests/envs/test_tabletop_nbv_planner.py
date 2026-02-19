@@ -27,7 +27,7 @@ def test_nbv_planner_basic():
     assert env.belief.visibility_grid is not None
 
     for _ in range(1):
-        _, _, _, _, _ = env.step(np.zeros(7))
+        _, _, _, _, _ = env.step(np.zeros(8))
 
     grid_debug_ids = env.belief.visibility_grid.visualize(
         env.physics_client_id, z_range=(0.0, 0.1)
@@ -110,7 +110,8 @@ def test_nbv_planner_basic():
         current_joints = np.array(env.robot.get_joint_positions())
         target_joints = np.array(best_viewpoint.joint_config)
         joint_delta = target_joints[:7] - current_joints[:7]
-        action = np.clip(joint_delta, env.action_space.low, env.action_space.high)
+        action = np.concatenate([joint_delta, [0.0]])
+        action = np.clip(action, env.action_space.low, env.action_space.high)
 
         _, _, _, _, _ = env.step(action)
 
@@ -147,7 +148,7 @@ def test_nbv_planner_for_target_object():
     assert env.scene is not None
 
     for _ in range(1):
-        _, _, _, _, _ = env.step(np.zeros(7))
+        _, _, _, _, _ = env.step(np.zeros(8))
 
     print(f"\n{'='*60}")
     print("NBV Planning for Target Object")
@@ -253,7 +254,8 @@ def test_nbv_planner_for_target_object():
             joint_delta = target_joints[:7] - current_joints[:7]
             if np.linalg.norm(joint_delta) < 1e-3:
                 break
-            action = np.clip(joint_delta, env.action_space.low, env.action_space.high)
+            action = np.concatenate([joint_delta, [0.0]])
+            action = np.clip(action, env.action_space.low, env.action_space.high)
             _, _, _, _, _ = env.step(action)
 
         print("\nAfter info-gathering step:")

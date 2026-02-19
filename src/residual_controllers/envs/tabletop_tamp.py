@@ -17,7 +17,7 @@ from bilevel_planning.trajectory_samplers.trajectory_sampler import (
     TrajectorySamplingFailure,
 )
 from gymnasium.spaces import Box
-from pybullet_helpers.geometry import Pose, get_pose
+from pybullet_helpers.geometry import Pose
 from pybullet_helpers.states import KinematicState
 from relational_structs import (
     GroundAtom,
@@ -113,7 +113,7 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
 
         self._target_id = self.env.scene.object_ids[self.env.scene.target_idx]
         objects = {self._robot_obj, self._table_obj} | set(self._block_objs)
-        init_atoms = self._get_atoms()
+        init_atoms = self._get_atoms_from_obs(obs)
 
         pybullet_id_to_obj = {v: k for k, v in self._pybullet_ids.items()}
         target_obj = pybullet_id_to_obj[self._target_id]
@@ -124,15 +124,20 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
         return objects, init_atoms, goal_atoms
 
     def step(self, obs: dict) -> RelationalAbstractState:
-        atoms = self._get_atoms()
+        atoms = self._get_atoms_from_obs(obs)
         objects = {self._robot_obj, self._table_obj} | set(self._block_objs)
         return RelationalAbstractState(atoms=atoms, objects=objects)
 
-    def _get_atoms(self) -> set[GroundAtom]:
+    def _get_atoms_from_obs(self, obs: dict) -> set[GroundAtom]:
+        assert self.env.scene is not None
         atoms: set[GroundAtom] = set()
         atoms.add(GroundAtom(self.predicates.is_movable, [self._table_obj]))
 
-        held_id = self._get_held_object_id()
+        held_idx = int(obs["held_object_idx"][0])
+        held_id = None
+        if held_idx >= 0:
+            held_id = self.env.scene.object_ids[held_idx]
+
         if held_id is None:
             atoms.add(GroundAtom(self.predicates.gripper_empty, [self._robot_obj]))
 
@@ -149,25 +154,6 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
                 atoms.add(GroundAtom(self.predicates.on, [block, self._table_obj]))
 
         return atoms
-
-    def _get_held_object_id(self) -> int | None:
-        assert self.env.robot is not None
-        gripper_joints = self.env.robot.get_joint_positions()[7:]
-        if not all(j < 0.02 for j in gripper_joints):
-            return None
-
-        ee_pose = self.env.robot.get_end_effector_pose()
-        for block in self._block_objs:
-            block_id = self._pybullet_ids[block]
-            block_pose = get_pose(block_id, self.env.physics_client_id)
-            dist = np.sqrt(
-                (ee_pose.position[0] - block_pose.position[0]) ** 2
-                + (ee_pose.position[1] - block_pose.position[1]) ** 2
-                + (ee_pose.position[2] - block_pose.position[2]) ** 2
-            )
-            if dist < 0.06:
-                return block_id
-        return None
 
     def get_pybullet_id(self, obj: Object) -> int:
         """Get the PyBullet ID corresponding to an abstract object."""
@@ -218,6 +204,7 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
         self._action_idx = 0
         self._terminated = False
         self._current_params: dict[str, float] | None = None
+        self._current_obs: dict | None = None
 
     def sample_parameters(self, x: dict, _rng: np.random.Generator) -> dict[str, float]:
         return {}
@@ -226,6 +213,7 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
         self._terminated = False
         self._action_idx = 0
         self._current_params = params
+        self._current_obs = x
         self._kinematic_plan = self._compute_kinematic_plan()
         if self._kinematic_plan is None:
             raise TrajectorySamplingFailure("Failed to compute pick plan")
@@ -239,7 +227,7 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
             or self._action_idx >= len(self._kinematic_plan) - 1
         ):
             self._terminated = True
-            return np.zeros(7, dtype=np.float32)
+            return np.zeros(8, dtype=np.float32)
 
         s0 = self._kinematic_plan[self._action_idx]
         s1 = self._kinematic_plan[self._action_idx + 1]
@@ -249,7 +237,16 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
             self._terminated = True
 
         joint_delta = np.subtract(s1.robot_joints[:7], s0.robot_joints[:7])
-        return joint_delta.astype(np.float32)
+
+        if s1.attachments and not s0.attachments:
+            gripper_action = -1.0
+        elif s0.attachments and not s1.attachments:
+            gripper_action = 1.0
+        else:
+            gripper_action = 0.0
+
+        action = np.hstack([joint_delta, [gripper_action]]).astype(np.float32)
+        return action
 
     def observe(self, x: dict) -> None:
         pass
@@ -257,22 +254,43 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
     def _compute_kinematic_plan(self) -> list[KinematicState] | None:
         assert self.env.robot is not None
         assert self.env.scene is not None
+        assert self._current_obs is not None
 
         _, obj, surface = self.objects
         object_id = self.abstractor.get_pybullet_id(obj)
         surface_id = self.abstractor.get_pybullet_id(surface)
 
-        robot_joints = list(self.env.robot.get_joint_positions())
+        robot_joints = list(self._current_obs["joint_positions"])
+        if len(robot_joints) >= 9:
+            finger_avg = (robot_joints[7] + robot_joints[8]) / 2
+            robot_joints[7] = finger_avg
+            robot_joints[8] = finger_avg
+
         object_poses: dict[int, Pose] = {
             self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
-        for obj_id in self.env.scene.object_ids:
-            object_poses[obj_id] = get_pose(obj_id, self.env.physics_client_id)
+        obs_poses = self._current_obs["object_poses"]
+        for i, obj_id in enumerate(self.env.scene.object_ids):
+            pos = tuple(obs_poses[i, :3])
+            orn = tuple(obs_poses[i, 3:])
+            object_poses[obj_id] = Pose(position=pos, orientation=orn)
 
-        state = KinematicState(robot_joints, object_poses, {})
+        held_idx = int(self._current_obs["held_object_idx"][0])
+        attachments: dict[int, Pose] = {}
+        if held_idx >= 0:
+            held_id = self.env.scene.object_ids[held_idx]
+            grasp_tf = self._current_obs["grasp_transform"]
+            attachments[held_id] = Pose(
+                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
+            )
+
+        initial_state = KinematicState(robot_joints, object_poses, attachments)
+
+        initial_state.set_pybullet(self.env.robot)
+
         collision_ids = set(object_poses.keys())
-        return get_kinematic_plan_to_pick_object(
-            state,
+        plan = get_kinematic_plan_to_pick_object(
+            initial_state,
             self.env.robot,
             object_id,
             surface_id,
@@ -282,6 +300,10 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
             max_motion_planning_time=1.0,
             max_smoothing_iters_per_step=1,
         )
+
+        initial_state.set_pybullet(self.env.robot)
+
+        return plan
 
     def _get_grasp_pose(self) -> Pose:
         assert self.env.robot is not None
