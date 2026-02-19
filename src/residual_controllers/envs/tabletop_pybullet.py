@@ -574,7 +574,7 @@ class TabletopPickEnv(gym.Env):
                 + (ee_pose.position[1] - obj_pose.position[1]) ** 2
                 + (ee_pose.position[2] - obj_pose.position[2]) ** 2
             )
-            if dist_sq < 1e-4:
+            if dist_sq < 1e-3:
                 self._held_object_id = obj_id
                 self._grasp_transform = multiply_poses(ee_pose.invert(), obj_pose)
                 break
