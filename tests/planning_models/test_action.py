@@ -1,5 +1,7 @@
 """Tests for tabletop TAMP planning."""
 
+from gymnasium.wrappers import RecordVideo
+
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 from residual_controllers.envs.tabletop_tamp import (
     TabletopAbstractor,
@@ -15,7 +17,8 @@ def test_tabletop_with_tamp():
     """Test TabletopPickEnv with bilevel TAMP planner."""
     seed = 123
 
-    env = TabletopPickEnv(gui=False, num_objects=1)
+    env = TabletopPickEnv(gui=False, num_objects=1, render_mode="rgb_array")
+    env = RecordVideo(env, "videos/planning")
     sim = TabletopPickEnv(gui=False, num_objects=1)
 
     obs, _ = env.reset(seed=seed)
