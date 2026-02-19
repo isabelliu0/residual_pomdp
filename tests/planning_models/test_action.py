@@ -1,7 +1,5 @@
 """Tests for tabletop TAMP planning."""
 
-import pytest
-
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 from residual_controllers.envs.tabletop_tamp import (
     TabletopAbstractor,
@@ -13,16 +11,23 @@ from residual_controllers.envs.tabletop_tamp import (
 from residual_controllers.tamp import PlanningComponents, run_tamp
 
 
-@pytest.mark.skip(reason="TODO: Add grasp transform")
 def test_tabletop_with_tamp():
     """Test TabletopPickEnv with bilevel TAMP planner."""
-    env = TabletopPickEnv(gui=True, num_objects=1)
-    obs, _ = env.reset(seed=123)
+    seed = 123
+
+    env = TabletopPickEnv(gui=False, num_objects=1)
+    sim = TabletopPickEnv(gui=False, num_objects=1)
+
+    obs, _ = env.reset(seed=seed)
+    sim.reset(seed=seed)
+
+    sim.set_state(env.get_state())
 
     types = TabletopTypes()
     predicates = TabletopPredicates(types)
     operators = create_tabletop_operators(types, predicates)
-    abstractor = TabletopAbstractor(env, types, predicates)
+
+    abstractor = TabletopAbstractor(sim, types, predicates)
 
     objects, init_atoms, goal_atoms = abstractor.reset(obs)
     print(f"Objects: {[o.name for o in objects]}")
@@ -36,10 +41,10 @@ def test_tabletop_with_tamp():
         abstractor=abstractor,
     )
 
-    skills = create_tabletop_skills(types, operators, env, abstractor)
+    skills = create_tabletop_skills(types, operators, sim, abstractor)
 
     def transition_fn(_obs_state, action):
-        next_obs, _, _, _, _ = env.step(action)
+        next_obs, _, _, _, _ = sim.step(action)
         return next_obs
 
     goal = abstractor.create_abstract_goal(goal_atoms, abstractor.step)
@@ -52,7 +57,7 @@ def test_tabletop_with_tamp():
         state_abstractor=abstractor.step,
         transition_function=transition_fn,
         timeout=30.0,
-        seed=123,
+        seed=seed,
     )
 
     assert plan is not None, "Should find a plan"
@@ -64,4 +69,12 @@ def test_tabletop_with_tamp():
 
     print(f"  - Refined trajectory: {len(plan.actions)} low-level actions")
 
+    print("\nExecuting plan on env...")
+    for i, action in enumerate(plan.actions):
+        obs, _, terminated, _, _ = env.step(action)
+        if terminated:
+            print(f"  Goal reached at step {i+1}!")
+            break
+
     env.close()
+    sim.close()

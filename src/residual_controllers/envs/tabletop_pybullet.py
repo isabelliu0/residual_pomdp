@@ -9,7 +9,7 @@ import gymnasium as gym
 import numpy as np
 import pybullet as p
 from pybullet_helpers.camera import capture_image
-from pybullet_helpers.geometry import Pose, multiply_poses, set_pose
+from pybullet_helpers.geometry import Pose, get_pose, multiply_poses, set_pose
 from pybullet_helpers.gui import create_gui_connection, visualize_pose
 from pybullet_helpers.inverse_kinematics import check_body_collisions
 from pybullet_helpers.link import get_link_pose
@@ -45,6 +45,16 @@ class TabletopScene:
     object_colors: list[tuple[float, float, float, float]]
     target_idx: int
     physics_client_id: int
+
+
+@dataclass(frozen=True)
+class TabletopEnvState:
+    """State for env/sim synchronization."""
+
+    robot_joints: tuple[float, ...]
+    object_poses: tuple[Pose, ...]
+    held_object_idx: int | None
+    grasp_transform: Pose | None
 
 
 class TabletopPickEnv(gym.Env):
@@ -100,6 +110,9 @@ class TabletopPickEnv(gym.Env):
         self.belief: Belief | None = None
         self._camera_frame_ids: set[int] = set()
 
+        self._held_object_id: int | None = None
+        self._grasp_transform: Pose | None = None
+
         self.wrist_camera_offset = (0.03649966282414946, -0.034889795700641386, 0.0574)
         self.wrist_camera_quat = (0.00252743, 0.0065769, 0.70345566, 0.71070423)
         fx, fy = 525.0, 525.0
@@ -113,6 +126,7 @@ class TabletopPickEnv(gym.Env):
             height=camera_height,
         )
 
+        max_objects = 10
         self.observation_space = gym.spaces.Dict(
             {
                 "joint_positions": gym.spaces.Box(
@@ -121,11 +135,22 @@ class TabletopPickEnv(gym.Env):
                 "camera_pose": gym.spaces.Box(
                     low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
                 ),
+                "object_poses": gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(max_objects, 7), dtype=np.float32
+                ),
+                "held_object_idx": gym.spaces.Box(
+                    low=-1, high=max_objects, shape=(1,), dtype=np.int32
+                ),
+                "grasp_transform": gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
+                ),
             }
         )
 
         self.action_space = gym.spaces.Box(
-            low=-0.1, high=0.1, shape=(7,), dtype=np.float32
+            low=np.array([-0.1] * 7 + [-1.0], dtype=np.float32),
+            high=np.array([0.1] * 7 + [1.0], dtype=np.float32),
+            dtype=np.float32,
         )
 
     def _create_table(self) -> int:
@@ -285,6 +310,9 @@ class TabletopPickEnv(gym.Env):
         gripper_pos = self.robot.get_joint_positions()[7:]
         self.robot.set_joints(self.home_joint_positions + list(gripper_pos))
 
+        self._held_object_id = None
+        self._grasp_transform = None
+
         table_id = self._create_table()
         object_ids, colors, target_idx = self._spawn_objects_with_occlusion()
 
@@ -339,6 +367,7 @@ class TabletopPickEnv(gym.Env):
 
     def _get_observation(self) -> dict[str, np.ndarray]:
         assert self.robot is not None
+        assert self.scene is not None
 
         joint_positions = self.robot.get_joint_positions()
 
@@ -353,9 +382,27 @@ class TabletopPickEnv(gym.Env):
             [np.array(camera_pose.position), np.array(camera_pose.orientation)]
         )
 
+        object_poses = np.zeros((10, 7), dtype=np.float32)
+        for i, obj_id in enumerate(self.scene.object_ids):
+            pose = get_pose(obj_id, self.physics_client_id)
+            object_poses[i, :3] = pose.position
+            object_poses[i, 3:] = pose.orientation
+
+        held_idx = -1
+        if self._held_object_id is not None:
+            held_idx = self.scene.object_ids.index(self._held_object_id)
+
+        grasp_tf = np.zeros(7, dtype=np.float32)
+        if self._grasp_transform is not None:
+            grasp_tf[:3] = self._grasp_transform.position
+            grasp_tf[3:] = self._grasp_transform.orientation
+
         return {
             "joint_positions": np.array(joint_positions, dtype=np.float32),
             "camera_pose": camera_pose_array.astype(np.float32),
+            "object_poses": object_poses,
+            "held_object_idx": np.array([held_idx], dtype=np.int32),
+            "grasp_transform": grasp_tf,
         }
 
     def get_camera_image(self) -> CameraImage:
@@ -417,17 +464,30 @@ class TabletopPickEnv(gym.Env):
         assert self.robot is not None
         assert self.scene is not None
 
+        joint_delta = action[:7]
+        gripper_action = action[7] if len(action) > 7 else 0.0
+
+        if gripper_action > 0.5 and self._held_object_id is not None:
+            self._held_object_id = None
+            self._grasp_transform = None
+
+        if gripper_action < -0.5 and self._held_object_id is None:
+            self._try_grasp()
+
         current_joints = self.robot.get_joint_positions()
 
-        new_joints = np.array(current_joints[:7]) + action
+        new_joints = np.array(current_joints[:7]) + joint_delta
         lower, upper = (
             self.robot.joint_lower_limits[:7],
             self.robot.joint_upper_limits[:7],
         )
         new_joints = np.clip(new_joints, lower, upper)
 
-        full_joints = list(new_joints) + current_joints[7:]
+        full_joints = list(new_joints) + list(current_joints[7:])
         self.robot.set_joints(full_joints)
+
+        if self._held_object_id is not None and self._grasp_transform is not None:
+            self._update_held_object_pose()
 
         p.stepSimulation(physicsClientId=self.physics_client_id)
 
@@ -437,7 +497,7 @@ class TabletopPickEnv(gym.Env):
         if self.belief is not None:
             self.belief = predict_belief(
                 self.belief,
-                action,
+                joint_delta,
                 np.array(self.robot.joint_lower_limits[:7]),
                 np.array(self.robot.joint_upper_limits[:7]),
                 noise_std=0.01,
@@ -495,6 +555,90 @@ class TabletopPickEnv(gym.Env):
                 image_height=480,
             )
         return None
+
+    def _try_grasp(self) -> None:
+        """Try to grasp an object near the end effector.
+
+        Uses tight distance threshold since kinematic planner should
+        have positioned the EE at the exact grasp pose.
+        """
+        assert self.robot is not None
+        assert self.scene is not None
+
+        ee_pose = self.robot.get_end_effector_pose()
+
+        for obj_id in self.scene.object_ids:
+            obj_pose = get_pose(obj_id, self.physics_client_id)
+            dist_sq = (
+                (ee_pose.position[0] - obj_pose.position[0]) ** 2
+                + (ee_pose.position[1] - obj_pose.position[1]) ** 2
+                + (ee_pose.position[2] - obj_pose.position[2]) ** 2
+            )
+            if dist_sq < 1e-4:
+                self._held_object_id = obj_id
+                self._grasp_transform = multiply_poses(ee_pose.invert(), obj_pose)
+                break
+
+    def _update_held_object_pose(self) -> None:
+        """Update held object pose based on current EE pose and grasp
+        transform."""
+        assert self.robot is not None
+        assert self._held_object_id is not None
+        assert self._grasp_transform is not None
+
+        ee_pose = self.robot.get_end_effector_pose()
+        new_obj_pose = multiply_poses(ee_pose, self._grasp_transform)
+        set_pose(self._held_object_id, new_obj_pose, self.physics_client_id)
+
+    @property
+    def held_object_id(self) -> int | None:
+        """Get the ID of the currently held object, if any."""
+        return self._held_object_id
+
+    def get_state(self) -> TabletopEnvState:
+        """Get current env state for sim synchronization."""
+        assert self.robot is not None
+        assert self.scene is not None
+
+        robot_joints = tuple(self.robot.get_joint_positions())
+        object_poses = tuple(
+            get_pose(obj_id, self.physics_client_id) for obj_id in self.scene.object_ids
+        )
+
+        held_object_idx = None
+        if self._held_object_id is not None:
+            held_object_idx = self.scene.object_ids.index(self._held_object_id)
+
+        return TabletopEnvState(
+            robot_joints=robot_joints,
+            object_poses=object_poses,
+            held_object_idx=held_object_idx,
+            grasp_transform=self._grasp_transform,
+        )
+
+    def set_state(self, state: TabletopEnvState) -> None:
+        """Set env state from TabletopEnvState."""
+        assert self.robot is not None
+        assert self.scene is not None
+
+        joints = list(state.robot_joints)
+        # Ensure finger symmetry (pybullet_helpers requires this)
+        if len(joints) >= 9:
+            finger_avg = (joints[7] + joints[8]) / 2
+            joints[7] = finger_avg
+            joints[8] = finger_avg
+        self.robot.set_joints(joints)
+
+        for i, pose in enumerate(state.object_poses):
+            obj_id = self.scene.object_ids[i]
+            set_pose(obj_id, pose, self.physics_client_id)
+
+        if state.held_object_idx is not None:
+            self._held_object_id = self.scene.object_ids[state.held_object_idx]
+            self._grasp_transform = state.grasp_transform
+        else:
+            self._held_object_id = None
+            self._grasp_transform = None
 
     def get_collision_ids(self) -> set[int]:
         """Get IDs for collision checking during motion planning."""
