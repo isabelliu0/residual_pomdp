@@ -113,8 +113,8 @@ class TabletopPickEnv(gym.Env):
         self._held_object_id: int | None = None
         self._grasp_transform: Pose | None = None
 
-        self.wrist_camera_offset = (0.03649966282414946, -0.034889795700641386, 0.0574)
-        self.wrist_camera_quat = (0.00252743, 0.0065769, 0.70345566, 0.71070423)
+        self.wrist_camera_offset = (0.03649966282414946, 0.0, 0.0574)
+        self.wrist_camera_quat = (0.0, 0.0, -0.00512551, 0.99996205)
         fx, fy = 525.0, 525.0
 
         self.camera_intrinsics = CameraIntrinsics(
@@ -495,6 +495,8 @@ class TabletopPickEnv(gym.Env):
             self._update_camera_visualization()
 
         if self.belief is not None:
+            self.belief.held_object_id = self._held_object_id
+
             self.belief = predict_belief(
                 self.belief,
                 joint_delta,
