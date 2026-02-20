@@ -164,7 +164,7 @@ def _print_visibility_stats(env: TabletopPickEnv, step: int | str) -> None:
 
 def test_particle_filter_diagnostics():
     """Test particle filter with camera tilt sequence to reveal objects."""
-    env = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.3)
+    env = TabletopPickEnv(gui=False, num_objects=5, occlusion_prob=0.7)
     _, _ = env.reset(seed=42)
 
     assert env.belief is not None

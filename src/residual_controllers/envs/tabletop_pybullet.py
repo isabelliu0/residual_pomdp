@@ -172,12 +172,34 @@ class TabletopPickEnv(gym.Env):
         object_ids: list[int] = []
         colors = []
 
-        target_idx = np.random.randint(0, self.num_objects)
+        target_idx = 0
         target_pos: tuple[float, float, float] | None = None
 
-        for i in range(self.num_objects):
-            is_target = i == target_idx
-            color = (1.0, 0.0, 0.0, 1.0) if is_target else self._get_random_color()
+        target_obj = create_pybullet_block(
+            color=(1.0, 0.0, 0.0, 1.0),
+            half_extents=(0.025, 0.025, 0.025),
+            physics_client_id=self.physics_client_id,
+            mass=0.1,
+            friction=0.9,
+        )
+
+        target_y_range: tuple[float, float] = (-0.3, 0.3)
+        if np.random.random() < self.occlusion_prob:
+            target_y_range = (-0.3, -0.1)
+
+        target_pose = self._sample_free_object_pose(
+            target_obj,
+            x_range=(0.1, 0.25),  # (0.3, 0.7)
+            y_range=target_y_range,
+            z=0.025,
+            collision_check_ids=[],
+        )
+        target_pos = target_pose.position
+        object_ids.append(target_obj)
+        colors.append((1.0, 0.0, 0.0, 1.0))
+
+        for _ in range(self.num_objects - 1):
+            color = self._get_random_color()
 
             obj = create_pybullet_block(
                 color=color,
@@ -190,29 +212,18 @@ class TabletopPickEnv(gym.Env):
             x_range: tuple[float, float] = (0.3, 0.7)
             y_range: tuple[float, float] = (-0.3, 0.3)
 
-            if is_target:
-                if np.random.random() < self.occlusion_prob:
-                    y_range = (-0.3, -0.1)
-            elif target_pos is not None and np.random.random() < self.occlusion_prob:
-                tx, ty = (
-                    target_pos[0],  # pylint: disable=unsubscriptable-object
-                    target_pos[1],  # pylint: disable=unsubscriptable-object
-                )
-                x_range = (max(0.3, tx - 0.1), min(0.7, tx + 0.1))
+            if np.random.random() < self.occlusion_prob:
+                tx, ty = target_pos[0], target_pos[1]
+                x_range = (max(0.3, tx - 0.1), min(0.7, tx + 0.3))  # min(0.7, tx + 0.1)
                 y_range = (max(-0.3, ty + 0.03), min(0.3, ty + 0.2))
 
-            collision_check_ids = object_ids.copy()
-
-            pose = self._sample_free_object_pose(
+            self._sample_free_object_pose(
                 obj,
                 x_range=x_range,
                 y_range=y_range,
                 z=0.025,
-                collision_check_ids=collision_check_ids,
+                collision_check_ids=object_ids.copy(),
             )
-
-            if is_target:
-                target_pos = pose.position
 
             object_ids.append(obj)
             colors.append(color)
