@@ -336,7 +336,7 @@ class TabletopPickEnv(gym.Env):
             physics_client_id=self.physics_client_id,
         )
 
-        obs = self._get_observation()
+        obs = self.get_observation()
         info = {"target_object_id": object_ids[int(target_idx)]}
         print(f"Reset environment with target object ID: {info['target_object_id']}")
 
@@ -376,7 +376,8 @@ class TabletopPickEnv(gym.Env):
 
         return (camera_pose.position, camera_pose.orientation)
 
-    def _get_observation(self) -> dict[str, np.ndarray]:
+    def get_observation(self) -> dict[str, np.ndarray]:
+        """Get current observation."""
         assert self.robot is not None
         assert self.scene is not None
 
@@ -527,11 +528,13 @@ class TabletopPickEnv(gym.Env):
                 self.physics_client_id,
             )
 
-        obs = self._get_observation()
-        reward = 0.0
-        terminated = False
+        obs = self.get_observation()
+
+        target_id = self.scene.object_ids[self.scene.target_idx]
+        terminated = self._held_object_id == target_id
+        reward = 1.0 if terminated else 0.0
         truncated = False
-        info: dict = {}
+        info = {"target_object_id": target_id}
 
         return obs, reward, terminated, truncated, info
 
