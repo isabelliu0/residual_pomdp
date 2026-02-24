@@ -7,6 +7,7 @@ from pybullet_helpers.geometry import multiply_poses
 from pybullet_helpers.gui import visualize_pose
 
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
+from residual_controllers.geometry import invert_pose
 from residual_controllers.information_gathering import (
     NBVPlanner,
     compute_object_target_center,
@@ -14,7 +15,6 @@ from residual_controllers.information_gathering import (
     filter_reachable_viewpoints,
     sample_hemisphere_viewpoints,
 )
-from residual_controllers.utils import invert_pose
 
 
 @pytest.mark.skip(reason="Requires GUI interaction")

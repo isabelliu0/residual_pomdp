@@ -13,7 +13,7 @@ from pybullet_helpers.inverse_kinematics import (
 from pybullet_helpers.robots import SingleArmPyBulletRobot
 from scipy.spatial.transform import Rotation
 
-from residual_controllers.utils import invert_pose
+from residual_controllers.geometry import invert_pose
 
 
 def sample_hemisphere_viewpoints(
