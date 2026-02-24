@@ -3,17 +3,6 @@
 from typing import Any, Callable
 
 import numpy as np
-from pybullet_helpers.geometry import Pose
-from scipy.spatial.transform import Rotation
-
-
-def invert_pose(pose: Pose) -> Pose:
-    """Compute the inverse of a pose transform."""
-    rot = Rotation.from_quat(pose.orientation)
-    inv_rot = rot.inv()
-    inv_quat = inv_rot.as_quat()
-    inv_position = -inv_rot.apply(pose.position)
-    return Pose(tuple(inv_position), tuple(inv_quat))
 
 
 def encode_belief_generic(belief: Any, encoder_fn: Callable) -> np.ndarray:

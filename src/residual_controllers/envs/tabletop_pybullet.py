@@ -44,6 +44,7 @@ class TabletopScene:
     object_ids: list[int]
     object_colors: list[tuple[float, float, float, float]]
     target_idx: int
+    target_area_id: int
     physics_client_id: int
 
 
@@ -144,6 +145,9 @@ class TabletopPickEnv(gym.Env):
                 "grasp_transform": gym.spaces.Box(
                     low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
                 ),
+                "target_area_pose": gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
+                ),
             }
         )
 
@@ -152,6 +156,22 @@ class TabletopPickEnv(gym.Env):
             high=np.array([0.1] * 7 + [1.0], dtype=np.float32),
             dtype=np.float32,
         )
+
+    def _create_target_area(self, position: tuple[float, float, float]) -> int:
+        """Create a semi-transparent green target area marker on the table."""
+        target_area = create_pybullet_block(
+            color=(0.0, 0.8, 0.0, 0.5),
+            half_extents=(0.05, 0.05, 0.002),
+            physics_client_id=self.physics_client_id,
+            mass=0,
+            friction=0.0,
+        )
+        set_pose(
+            target_area,
+            Pose(position=position, orientation=(0, 0, 0, 1)),
+            self.physics_client_id,
+        )
+        return target_area
 
     def _create_table(self) -> int:
         table = create_pybullet_block(
@@ -168,9 +188,10 @@ class TabletopPickEnv(gym.Env):
         )
         return table
 
-    def _spawn_objects_with_occlusion(self) -> tuple[list[int], list[tuple], int]:
+    def _spawn_objects_with_occlusion(self) -> tuple[list[int], list[tuple], int, int]:
         object_ids: list[int] = []
         colors = []
+        distractor_positions: list[tuple[float, float, float]] = []
 
         target_idx = 0
         target_pos: tuple[float, float, float] | None = None
@@ -189,7 +210,7 @@ class TabletopPickEnv(gym.Env):
 
         target_pose = self._sample_free_object_pose(
             target_obj,
-            x_range=(0.1, 0.25),  # (0.3, 0.7)
+            x_range=(0.1, 0.25),
             y_range=target_y_range,
             z=0.025,
             collision_check_ids=[],
@@ -214,10 +235,10 @@ class TabletopPickEnv(gym.Env):
 
             if np.random.random() < self.occlusion_prob:
                 tx, ty = target_pos[0], target_pos[1]
-                x_range = (max(0.3, tx - 0.1), min(0.7, tx + 0.3))  # min(0.7, tx + 0.1)
+                x_range = (max(0.3, tx - 0.1), min(0.7, tx + 0.3))
                 y_range = (max(-0.3, ty + 0.03), min(0.3, ty + 0.2))
 
-            self._sample_free_object_pose(
+            distractor_pose = self._sample_free_object_pose(
                 obj,
                 x_range=x_range,
                 y_range=y_range,
@@ -227,8 +248,23 @@ class TabletopPickEnv(gym.Env):
 
             object_ids.append(obj)
             colors.append(color)
+            distractor_positions.append(distractor_pose.position)
 
-        return object_ids, colors, target_idx
+        if distractor_positions:
+            ref_pos = distractor_positions[-1]
+            area_x = float(
+                np.clip(ref_pos[0] + np.random.uniform(-0.08, 0.08), 0.3, 0.65)
+            )
+            area_y = float(
+                np.clip(ref_pos[1] + np.random.uniform(-0.08, 0.08), -0.25, 0.25)
+            )
+        else:
+            area_x = float(np.random.uniform(0.35, 0.6))
+            area_y = float(np.random.uniform(-0.2, 0.2))
+
+        target_area_id = self._create_target_area((area_x, area_y, 0.002))
+
+        return object_ids, colors, target_idx, target_area_id
 
     def _get_random_color(self) -> tuple[float, float, float, float]:
         colors = [
@@ -313,6 +349,9 @@ class TabletopPickEnv(gym.Env):
                 )
                 for obj_id in self.scene.object_ids:
                     p.removeBody(obj_id, physicsClientId=self.physics_client_id)
+                p.removeBody(
+                    self.scene.target_area_id, physicsClientId=self.physics_client_id
+                )
 
         self.robot = cast(
             FingeredSingleArmPyBulletRobot,
@@ -325,7 +364,9 @@ class TabletopPickEnv(gym.Env):
         self._grasp_transform = None
 
         table_id = self._create_table()
-        object_ids, colors, target_idx = self._spawn_objects_with_occlusion()
+        object_ids, colors, target_idx, target_area_id = (
+            self._spawn_objects_with_occlusion()
+        )
 
         self.scene = TabletopScene(
             robot=self.robot,
@@ -333,6 +374,7 @@ class TabletopPickEnv(gym.Env):
             object_ids=object_ids,
             object_colors=colors,
             target_idx=target_idx,
+            target_area_id=target_area_id,
             physics_client_id=self.physics_client_id,
         )
 
@@ -409,12 +451,19 @@ class TabletopPickEnv(gym.Env):
             grasp_tf[:3] = self._grasp_transform.position
             grasp_tf[3:] = self._grasp_transform.orientation
 
+        target_area_pose_arr = np.zeros(7, dtype=np.float32)
+        if self.scene is not None:
+            area_pose = get_pose(self.scene.target_area_id, self.physics_client_id)
+            target_area_pose_arr[:3] = area_pose.position
+            target_area_pose_arr[3:] = area_pose.orientation
+
         return {
             "joint_positions": np.array(joint_positions, dtype=np.float32),
             "camera_pose": camera_pose_array.astype(np.float32),
             "object_poses": object_poses,
             "held_object_idx": np.array([held_idx], dtype=np.int32),
             "grasp_transform": grasp_tf,
+            "target_area_pose": target_area_pose_arr,
         }
 
     def get_camera_image(self) -> CameraImage:
@@ -531,7 +580,7 @@ class TabletopPickEnv(gym.Env):
         obs = self.get_observation()
 
         target_id = self.scene.object_ids[self.scene.target_idx]
-        terminated = self._held_object_id == target_id
+        terminated = self._held_object_id is None and self._is_target_in_area()
         reward = 1.0 if terminated else 0.0
         truncated = False
         info = {"target_object_id": target_id}
@@ -571,6 +620,17 @@ class TabletopPickEnv(gym.Env):
                 image_height=480,
             )
         return None
+
+    def _is_target_in_area(self) -> bool:
+        """Check if target block's xy center is within 5 cm of the target
+        area."""
+        assert self.scene is not None
+        target_id = self.scene.object_ids[self.scene.target_idx]
+        target_pos = get_pose(target_id, self.physics_client_id).position
+        area_pos = get_pose(self.scene.target_area_id, self.physics_client_id).position
+        dx = target_pos[0] - area_pos[0]
+        dy = target_pos[1] - area_pos[1]
+        return dx * dx + dy * dy < 0.05 * 0.05
 
     def _try_grasp(self) -> None:
         """Try to grasp an object near the end effector.
