@@ -3,6 +3,7 @@
 import pytest
 from gymnasium.wrappers import RecordVideo
 
+from residual_controllers.beliefs import get_mean_state
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 from residual_controllers.envs.tabletop_tamp import (
     TabletopAbstractor,
@@ -25,10 +26,12 @@ def test_tabletop_with_tamp():
     env = RecordVideo(base_env, "videos/planning")
     sim = TabletopPickEnv(gui=False, num_objects=1)
 
-    obs, _ = env.reset(seed=seed)
+    _, _ = env.reset(seed=seed)
     sim.reset(seed=seed)
-
     sim.set_state(env.get_state())
+
+    assert base_env.belief is not None
+    belief_obs = sim.get_obs_from_mean(get_mean_state(base_env.belief))
 
     types = TabletopTypes()
     predicates = TabletopPredicates(types)
@@ -36,7 +39,7 @@ def test_tabletop_with_tamp():
 
     abstractor = TabletopAbstractor(sim, types, predicates)
 
-    objects, init_atoms, goal_atoms = abstractor.reset(obs)
+    objects, init_atoms, goal_atoms = abstractor.reset(belief_obs)
     print(f"Objects: {[o.name for o in objects]}")
     print(f"Initial atoms: {[str(a) for a in init_atoms]}")
     print(f"Goal atoms: {[str(a) for a in goal_atoms]}")
@@ -59,7 +62,7 @@ def test_tabletop_with_tamp():
     plan, graph = run_tamp(
         components=components,
         skills=skills,
-        initial_state=obs,
+        initial_state=belief_obs,
         goal=goal,
         state_abstractor=abstractor.step,
         transition_function=transition_fn,
@@ -79,7 +82,7 @@ def test_tabletop_with_tamp():
     print("\nExecuting plan on env...")
     terminated = False
     for i, action in enumerate(plan.actions):
-        obs, _, terminated, _, _ = env.step(action)
+        _, _, terminated, _, _ = env.step(action)
         if terminated:
             print(f"\n  Goal reached at step {i+1}!")
             break
