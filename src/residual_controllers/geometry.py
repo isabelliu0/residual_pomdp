@@ -17,7 +17,7 @@ def invert_pose(pose: Pose) -> Pose:
 def get_half_extents_from_aabb(
     body_id: int,
     physics_client_id: int,
-    max_tilt_rad: float = 0.2,
+    max_tilt_rad: float = 0.5,
 ) -> tuple[float, float, float]:
     """Get AABB half extents.
 

@@ -55,6 +55,10 @@ class BaseTAMPSystem(Generic[ObsType, ActType], ABC):
     def get_noop_action(self) -> ActType:
         """Return a no-op action."""
 
+    def get_symbolic_plan(self, _planner: str = "pyperplan") -> list[str] | None:
+        """Generate a symbolic (PDDL-only) task plan."""
+        return None
+
     def close(self) -> None:
         """Clean up resources."""
         self.env.close()

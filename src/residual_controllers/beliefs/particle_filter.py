@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
+import pybullet as p
 
 from residual_controllers.beliefs.occupancy_grid import LogOddsOccupancyGrid
 from residual_controllers.beliefs.perception import detect_objects_from_segmentation
@@ -30,7 +31,6 @@ class ObjectLikelihoodStats:
     mean_likelihood: float
     min_likelihood: float
     max_likelihood: float
-    particles_with_none_pose: int
     total_particles: int
 
 
@@ -49,6 +49,20 @@ class BeliefUpdateDiagnostics:
     weight_std_after: float = 0.0
     weight_max_before: float = 0.0
     weight_max_after: float = 0.0
+
+
+def _sample_on_table_pose(
+    obj_id: int, table_id: int, physics_client_id: int
+) -> SE3Pose:
+    """Sample a random pose for obj placed flat on the table surface."""
+    table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
+    table_top_z = float(table_aabb[1][2])
+    obj_aabb = p.getAABB(obj_id, physicsClientId=physics_client_id)
+    obj_half_z = float((obj_aabb[1][2] - obj_aabb[0][2]) / 2.0)
+    x = float(np.random.uniform(table_aabb[0][0], table_aabb[1][0]))
+    y = float(np.random.uniform(table_aabb[0][1], table_aabb[1][1]))
+    z = table_top_z + obj_half_z
+    return (x, y, z, 0.0, 0.0, 0.0, 1.0)
 
 
 def create_initial_belief(
@@ -78,7 +92,7 @@ def create_initial_belief(
         joint_positions = tuple(env.robot.get_joint_positions())
         gripper_open = 0.04
 
-        object_poses: dict[int, SE3Pose | None] = {}
+        object_poses: dict[int, SE3Pose] = {}
 
         for obj_id in known_objects:
             detected_pose, _ = detections[obj_id]
@@ -86,7 +100,9 @@ def create_initial_belief(
             object_poses[obj_id] = noisy_pose
 
         for obj_id in unknown_objects:
-            object_poses[obj_id] = None
+            object_poses[obj_id] = _sample_on_table_pose(
+                obj_id, env.scene.table_id, env.physics_client_id
+            )
 
         state = TabletopState(
             joint_positions=joint_positions,
@@ -257,14 +273,12 @@ def update_belief(
         new_object_poses = dict(particle.object_poses)
 
         for obj_id, (detected_pose, _) in detections.items():
-            particle_pose = new_object_poses.get(obj_id)
-
-            if particle_pose is None:
-                likelihood *= config.missing_pose_likelihood
+            if obj_id in belief.unknown_objects:
                 new_object_poses[obj_id] = add_pose_noise(
                     detected_pose, pos_std=pos_std, rot_std=rot_std
                 )
             else:
+                particle_pose = new_object_poses[obj_id]
                 dist = pose_distance(particle_pose, detected_pose)
                 likelihood *= np.exp(
                     -0.5 * (dist / config.likelihood_distance_scale) ** 2
@@ -397,31 +411,24 @@ def compute_belief_diagnostics(
     for obj_id, (detected_pose, _) in detections.items():
         distances = []
         likelihoods = []
-        none_count = 0
 
         for particle in belief.particles:
-            particle_pose = particle.object_poses.get(obj_id)
-            if particle_pose is None:
-                none_count += 1
-                likelihoods.append(0.5)
-            else:
-                dist = pose_distance(particle_pose, detected_pose)
-                distances.append(dist)
-                likelihood = np.exp(
-                    -0.5 * (dist / config.likelihood_distance_scale) ** 2
-                )
-                likelihoods.append(likelihood)
+            particle_pose = particle.object_poses[obj_id]
+            dist = pose_distance(particle_pose, detected_pose)
+            distances.append(dist)
+            likelihoods.append(
+                float(np.exp(-0.5 * (dist / config.likelihood_distance_scale) ** 2))
+            )
 
         stats = ObjectLikelihoodStats(
             obj_id=obj_id,
-            mean_distance=float(np.mean(distances)) if distances else 0.0,
-            min_distance=float(np.min(distances)) if distances else 0.0,
-            max_distance=float(np.max(distances)) if distances else 0.0,
-            std_distance=float(np.std(distances)) if distances else 0.0,
+            mean_distance=float(np.mean(distances)),
+            min_distance=float(np.min(distances)),
+            max_distance=float(np.max(distances)),
+            std_distance=float(np.std(distances)),
             mean_likelihood=float(np.mean(likelihoods)),
             min_likelihood=float(np.min(likelihoods)),
             max_likelihood=float(np.max(likelihoods)),
-            particles_with_none_pose=none_count,
             total_particles=len(belief.particles),
         )
         diagnostics.object_stats[obj_id] = stats
@@ -431,14 +438,13 @@ def compute_belief_diagnostics(
     for particle in belief.particles:
         likelihood = 1.0
         for obj_id, (detected_pose, _) in detections.items():
-            particle_pose = particle.object_poses.get(obj_id)
-            if particle_pose is None:
-                likelihood *= config.missing_pose_likelihood
-            else:
-                dist = pose_distance(particle_pose, detected_pose)
-                likelihood *= np.exp(
-                    -0.5 * (dist / config.likelihood_distance_scale) ** 2
-                )
+            if obj_id in belief.unknown_objects:
+                continue
+            particle_pose = particle.object_poses[obj_id]
+            dist = pose_distance(particle_pose, detected_pose)
+            likelihood *= float(
+                np.exp(-0.5 * (dist / config.likelihood_distance_scale) ** 2)
+            )
         likelihoods_all.append(likelihood)
 
     likelihoods_arr = np.array(likelihoods_all, dtype=np.float64)
@@ -457,7 +463,6 @@ def compute_belief_diagnostics(
     mean_distances = {
         obj_id: stats.mean_distance
         for obj_id, stats in diagnostics.object_stats.items()
-        if stats.particles_with_none_pose < stats.total_particles
     }
     observation_confidence = compute_observation_confidence(
         belief,
@@ -477,21 +482,14 @@ def compute_belief_diagnostics(
 
 def _get_last_known_pose(belief: Belief, obj_id: int) -> tuple[float, ...] | None:
     """Get last known pose for an object from particles (weighted mean)."""
-    poses = []
-    weights = []
-    for i, particle in enumerate(belief.particles):
-        pose = particle.object_poses.get(obj_id)
-        if pose is not None:
-            poses.append(pose)
-            weights.append(belief.weights[i])
-
+    poses = [
+        particle.object_poses[obj_id]
+        for particle in belief.particles
+        if obj_id in particle.object_poses
+    ]
     if not poses:
         return None
-
-    weights_arr = np.array(weights)
-    weights_arr /= weights_arr.sum()
-
-    return average_poses(poses, weights_arr)
+    return average_poses(poses, belief.weights / belief.weights.sum())
 
 
 def _is_position_visible(
@@ -505,18 +503,15 @@ def _fraction_visible_particles(
     belief: Belief, obj_id: int, visibility_grid: LogOddsOccupancyGrid
 ) -> float:
     """Fraction of particles whose object pose lies in visible grid space."""
-    visible = 0
-    total = 0
-    for particle in belief.particles:
-        pose = particle.object_poses.get(obj_id)
-        if pose is None:
-            continue
-        total += 1
-        if _is_position_visible(visibility_grid, pose[:3]):
-            visible += 1
-    if total == 0:
-        return 0.0
-    return float(visible) / float(total)
+    poses = [
+        particle.object_poses[obj_id]
+        for particle in belief.particles
+        if obj_id in particle.object_poses
+    ]
+    visible = sum(
+        1 for pose in poses if _is_position_visible(visibility_grid, pose[:3])
+    )
+    return float(visible) / float(len(poses))
 
 
 def get_mean_state(belief: Belief) -> TabletopState:
@@ -535,14 +530,10 @@ def get_mean_state(belief: Belief) -> TabletopState:
     for particle in belief.particles:
         all_obj_ids.update(particle.object_poses.keys())
 
-    mean_object_poses: dict[int, SE3Pose | None] = {}
+    mean_object_poses: dict[int, SE3Pose] = {}
     for obj_id in all_obj_ids:
-        poses = [particle.object_poses.get(obj_id) for particle in belief.particles]
-        if all(pose is not None for pose in poses):
-            mean_pose = average_poses(poses, belief.weights)  # type: ignore
-            mean_object_poses[obj_id] = mean_pose
-        else:
-            mean_object_poses[obj_id] = None
+        poses = [particle.object_poses[obj_id] for particle in belief.particles]
+        mean_object_poses[obj_id] = average_poses(poses, belief.weights)
 
     return TabletopState(
         joint_positions=tuple(mean_joints),
@@ -552,25 +543,14 @@ def get_mean_state(belief: Belief) -> TabletopState:
 
 
 def get_mean_object_position(belief: Belief, object_id: int) -> np.ndarray | None:
-    """Get weighted average position (xyz) for a specific object.
-
-    Returns None if no particles have a pose for this object.
-    """
-    positions: list[list[float]] = []
-    weights: list[float] = []
-    for particle, weight in zip(belief.particles, belief.weights):
-        pose = particle.object_poses.get(object_id)
-        if pose is not None:
-            positions.append([pose[0], pose[1], pose[2]])
-            weights.append(weight)
-
-    if not positions:
-        return None
-
-    positions_arr = np.array(positions, dtype=np.float32)
-    weights_arr = np.array(weights, dtype=np.float32)
-    weights_arr = weights_arr / weights_arr.sum()
-    return np.average(positions_arr, axis=0, weights=weights_arr)
+    """Get weighted average position (xyz) for a specific object."""
+    poses = [
+        particle.object_poses[object_id]
+        for particle in belief.particles
+        if object_id in particle.object_poses
+    ]
+    positions_arr = np.array([[p[0], p[1], p[2]] for p in poses], dtype=np.float32)
+    return np.average(positions_arr, axis=0, weights=belief.weights)
 
 
 def add_pose_noise(pose: tuple[float, ...], pos_std: float, rot_std: float) -> SE3Pose:
@@ -666,17 +646,12 @@ def compute_observation_confidence(
 
     scores = []
     for obj_id, (detected_pose, _) in detections.items():
-        distances = []
-        weights = []
-        for i, particle in enumerate(belief.particles):
-            particle_pose = particle.object_poses.get(obj_id)
-            if particle_pose is None:
-                continue
-            distances.append(pose_distance(particle_pose, detected_pose))
-            weights.append(float(belief.weights[i]))
-        if not distances:
-            continue
-        weights_arr = np.array(weights, dtype=np.float64)
+        distances = [
+            pose_distance(particle.object_poses[obj_id], detected_pose)
+            for particle in belief.particles
+            if obj_id in particle.object_poses
+        ]
+        weights_arr = belief.weights.astype(np.float64)
         weights_arr /= weights_arr.sum()
         mean_dist = float(np.sum(np.array(distances) * weights_arr))
         scores.append(float(np.exp(-0.5 * (mean_dist / distance_scale) ** 2)))

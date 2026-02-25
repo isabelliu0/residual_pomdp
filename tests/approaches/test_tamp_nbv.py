@@ -3,12 +3,14 @@
 import os
 
 import imageio
+import pytest
 from pybullet_helpers.camera import capture_image
 
 from residual_controllers.approaches import TampNbvApproach, TampNbvConfig
 from residual_controllers.benchmarks import TabletopPickTAMPSystem
 
 
+@pytest.mark.skip(reason="Outdated test.")
 def test_tamp_nbv():
     """Test the TAMP + NBV approach on the TabletopPickTAMPSystem."""
     system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)

@@ -17,7 +17,7 @@ from bilevel_planning.trajectory_samplers.trajectory_sampler import (
     TrajectorySamplingFailure,
 )
 from gymnasium.spaces import Box
-from pybullet_helpers.geometry import Pose, get_pose, multiply_poses
+from pybullet_helpers.geometry import Pose, get_pose, multiply_poses, set_pose
 from pybullet_helpers.inverse_kinematics import check_body_collisions
 from pybullet_helpers.states import KinematicState
 from relational_structs import (
@@ -30,6 +30,7 @@ from relational_structs import (
     Variable,
 )
 
+from residual_controllers.beliefs.structs import TabletopState
 from residual_controllers.envs.tabletop_manipulation import (
     get_kinematic_plan_to_pick_object,
     get_kinematic_plan_to_place_object,
@@ -181,7 +182,6 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
     def _get_atoms_from_obs(self, obs: dict) -> set[GroundAtom]:
         assert self.env.scene is not None
         atoms: set[GroundAtom] = set()
-        atoms.add(GroundAtom(self.predicates.is_movable, [self._table_obj]))
         atoms.add(GroundAtom(self.predicates.is_target_area, [self._target_area_obj]))
 
         held_idx = int(obs["held_object_idx"][0])
@@ -211,6 +211,34 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
     def get_pybullet_id(self, obj: Object) -> int:
         """Get the PyBullet ID corresponding to an abstract object."""
         return self._pybullet_ids[obj]
+
+    def get_atoms_from_belief_particles(
+        self,
+        particles: list[TabletopState],
+        source_object_ids: list[int],
+        held_obs: dict,
+    ) -> set[GroundAtom]:
+        """Optimistic abstraction: union of atoms across all particles.
+
+        source_object_ids: real env's pybullet IDs, used to map particle poses
+        to this (plan) env's objects by index.
+        held_obs: observation providing held_object_idx (consistent across particles).
+        """
+        assert self.env.scene is not None
+        union: set[GroundAtom] = set()
+        for particle in particles:
+            for sim_obj_id, src_obj_id in zip(
+                self.env.scene.object_ids, source_object_ids
+            ):
+                pose = particle.object_poses.get(src_obj_id)
+                if pose is not None:
+                    set_pose(
+                        sim_obj_id,
+                        Pose(position=pose[:3], orientation=pose[3:]),
+                        self.env.physics_client_id,
+                    )
+            union |= self._get_atoms_from_obs(held_obs)
+        return union
 
 
 def create_tabletop_operators(

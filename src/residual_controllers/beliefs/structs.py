@@ -99,7 +99,7 @@ class TabletopState:
 
     joint_positions: tuple[float, ...]  # 9D: 7 arm + 2 fingers
     gripper_open: float  # [0, 1] normalized
-    object_poses: dict[int, SE3Pose | None]  # object_id -> (x,y,z,qx,qy,qz,qw) or None
+    object_poses: dict[int, SE3Pose]  # object_id -> (x,y,z,qx,qy,qz,qw)
 
 
 @dataclass
