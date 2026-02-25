@@ -304,9 +304,6 @@ def test_particle_filter_diagnostics():
                 f"   likelihood: mean={stats.mean_likelihood:.4f},"
                 f"range=[{stats.min_likelihood:.4f}, {stats.max_likelihood:.4f}]"
             )
-            print(
-                f"   no poses: {stats.particles_with_none_pose}/{stats.total_particles}"
-            )
 
         if diagnostics.resampled:
             resampling_count += 1

@@ -463,11 +463,6 @@ class TabletopPickEnv(gym.Env):
     ) -> dict:
         """Build an obs dict with object poses from the belief mean state.
 
-        Sets simulation env's object/joint positions to match the mean
-        state so that subsequent pybullet queries (collision, on-
-        relations) are consistent. Objects whose mean pose is None
-        (unknown) are left at their current pybullet positions.
-
         source_object_ids: the env whose belief produced mean_state, used
         to map belief poses to this sim's objects by index rather than by
         pybullet body ID (which differ across physics clients).

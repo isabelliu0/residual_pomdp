@@ -43,12 +43,8 @@ def compute_object_target_center(
     For known objects: returns weighted mean position from particles.
     For occluded/unknown objects: returns centroid of uncertain region.
     """
-    has_pose = any(
-        particle.object_poses.get(object_id) is not None
-        for particle in belief.particles
-    )
     confidence = belief.object_confidence.get(object_id, 0.0)
-    if not has_pose or confidence < 0.1:
+    if confidence < 0.1:
         if belief.visibility_grid is not None:
             print("Planning NBV for centroid of uncertain region...")
             return compute_region_centroid(belief.visibility_grid, z_range=z_range)

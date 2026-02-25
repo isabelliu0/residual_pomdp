@@ -15,7 +15,9 @@ from residual_controllers.envs.tabletop_tamp import (
 from residual_controllers.tamp import PlanningComponents, run_tamp
 
 
-@pytest.mark.skip()
+@pytest.mark.skip(
+    reason="Planning will fail since target object is not observed at init."
+)
 def test_tabletop_with_tamp():
     """Test TabletopPickEnv pick-and-place with bilevel TAMP planner."""
     seed = 123
