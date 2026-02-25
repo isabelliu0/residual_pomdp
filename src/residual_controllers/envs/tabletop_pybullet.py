@@ -20,6 +20,7 @@ from pybullet_helpers.utils import create_pybullet_block
 from residual_controllers.beliefs import (
     Belief,
     CameraIntrinsics,
+    TabletopState,
     create_initial_belief,
     predict_belief,
     update_belief,
@@ -250,17 +251,8 @@ class TabletopPickEnv(gym.Env):
             colors.append(color)
             distractor_positions.append(distractor_pose.position)
 
-        if distractor_positions:
-            ref_pos = distractor_positions[-1]
-            area_x = float(
-                np.clip(ref_pos[0] + np.random.uniform(-0.08, 0.08), 0.3, 0.65)
-            )
-            area_y = float(
-                np.clip(ref_pos[1] + np.random.uniform(-0.08, 0.08), -0.25, 0.25)
-            )
-        else:
-            area_x = float(np.random.uniform(0.35, 0.6))
-            area_y = float(np.random.uniform(-0.2, 0.2))
+        area_x = float(np.random.uniform(0.6, 0.75))
+        area_y = float(np.random.uniform(-0.2, 0.2))
 
         target_area_id = self._create_target_area((area_x, area_y, 0.002))
 
@@ -465,6 +457,36 @@ class TabletopPickEnv(gym.Env):
             "grasp_transform": grasp_tf,
             "target_area_pose": target_area_pose_arr,
         }
+
+    def get_obs_from_mean(
+        self, mean_state: TabletopState, source_object_ids: list[int]
+    ) -> dict:
+        """Build an obs dict with object poses from the belief mean state.
+
+        Sets simulation env's object/joint positions to match the mean
+        state so that subsequent pybullet queries (collision, on-
+        relations) are consistent. Objects whose mean pose is None
+        (unknown) are left at their current pybullet positions.
+
+        source_object_ids: the env whose belief produced mean_state, used
+        to map belief poses to this sim's objects by index rather than by
+        pybullet body ID (which differ across physics clients).
+        """
+        assert self.robot is not None
+        assert self.scene is not None
+
+        self.robot.set_joints(list(mean_state.joint_positions))
+
+        for sim_obj_id, src_obj_id in zip(self.scene.object_ids, source_object_ids):
+            mean_pose = mean_state.object_poses.get(src_obj_id)
+            if mean_pose is not None:
+                set_pose(
+                    sim_obj_id,
+                    Pose(position=mean_pose[:3], orientation=mean_pose[3:]),
+                    self.physics_client_id,
+                )
+
+        return self.get_observation()
 
     def get_camera_image(self) -> CameraImage:
         """Get RGB-D-Seg image from wrist-mounted camera."""

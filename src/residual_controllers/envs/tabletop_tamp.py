@@ -147,9 +147,10 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
         """Return (upper, lower) pairs where upper is resting on lower."""
         pcid = self.env.physics_client_id
         upper_candidates = [self._target_area_obj] + self._block_objs
-        lower_candidates = [self._table_obj, self._target_area_obj] + self._block_objs
+        lower_candidates = [self._target_area_obj, self._table_obj] + self._block_objs
 
         on_relations: set[tuple[Object, Object]] = set()
+        on_target_area: set[Object] = set()
         for obj1 in upper_candidates:
             obj1_id = self._pybullet_ids[obj1]
             if obj1_id == held_id:
@@ -161,15 +162,19 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
             for obj2 in lower_candidates:
                 if obj1 == obj2:
                     continue
+                if obj2 == self._table_obj and obj1 in on_target_area:
+                    continue
                 obj2_id = self._pybullet_ids[obj2]
                 pose2 = get_pose(obj2_id, pcid)
                 half2 = get_half_extents_from_aabb(obj2_id, pcid)
                 obj2_top_z = pose2.position[2] + half2[2]
 
                 if abs(obj1_bottom_z - obj2_top_z) < 0.005 and check_body_collisions(
-                    obj1_id, obj2_id, pcid, distance_threshold=1e-4
+                    obj1_id, obj2_id, pcid, distance_threshold=0.002
                 ):
                     on_relations.add((obj1, obj2))
+                    if obj2 == self._target_area_obj and obj1 in self._block_objs:
+                        on_target_area.add(obj1)
 
         return on_relations
 

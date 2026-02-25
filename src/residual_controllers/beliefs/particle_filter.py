@@ -61,11 +61,7 @@ def create_initial_belief(
     config = config or BeliefConfig()
     camera_pose = env.get_camera_pose_se3()
     detections = detect_objects_from_segmentation(
-        camera_image.rgb,
-        camera_image.depth,
         camera_image.segmentation,
-        camera_pose,
-        env.camera_intrinsics,
         env.scene.object_ids,
         env.physics_client_id,
     )
@@ -189,11 +185,7 @@ def update_belief(
 ) -> Belief:
     """Update belief from new camera observation."""
     detections = detect_objects_from_segmentation(
-        camera_image.rgb,
-        camera_image.depth,
         camera_image.segmentation,
-        camera_pose,
-        camera_intrinsics,
         object_ids,
         physics_client_id,
     )
@@ -378,19 +370,13 @@ def update_belief(
 def compute_belief_diagnostics(
     belief: Belief,
     camera_image,
-    camera_pose: tuple[tuple[float, ...], tuple[float, ...]],
-    camera_intrinsics: CameraIntrinsics,
     object_ids: list[int],
     physics_client_id: int,
     config: BeliefConfig | None = None,
 ) -> BeliefUpdateDiagnostics:
     """Compute diagnostics for belief update without modifying belief."""
     detections = detect_objects_from_segmentation(
-        camera_image.rgb,
-        camera_image.depth,
         camera_image.segmentation,
-        camera_pose,
-        camera_intrinsics,
         object_ids,
         physics_client_id,
     )

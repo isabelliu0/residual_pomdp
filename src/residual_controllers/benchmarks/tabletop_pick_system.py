@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from residual_controllers.beliefs import get_mean_state
 from residual_controllers.beliefs.structs import Belief
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
@@ -80,7 +81,12 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
             self._plan_env.reset(seed=seed or self._seed)
 
         self._plan_env.set_state(self.env.get_state())
-        obs = self._plan_env.get_observation()
+        if self.env.belief is not None:
+            obs = self._plan_env.get_obs_from_mean(
+                get_mean_state(self.env.belief), self.env.scene.object_ids
+            )
+        else:
+            obs = self._plan_env.get_observation()
 
         types = TabletopTypes()
         predicates = TabletopPredicates(types)
