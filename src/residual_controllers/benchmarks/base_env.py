@@ -59,6 +59,15 @@ class BaseTAMPSystem(Generic[ObsType, ActType], ABC):
         """Generate a symbolic (PDDL-only) task plan."""
         return None
 
+    def get_oig_ignored_objects(self) -> set[str]:
+        """Return object names to exclude from the Object Interaction Graph.
+
+        Override per environment to exclude always-known static objects
+        (e.g. robot, fixed surfaces) that would otherwise merge all
+        components.
+        """
+        return set()
+
     def close(self) -> None:
         """Clean up resources."""
         self.env.close()

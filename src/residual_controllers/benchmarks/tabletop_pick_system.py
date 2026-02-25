@@ -155,6 +155,9 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
     def get_noop_action(self) -> np.ndarray:
         return np.zeros(8, dtype=np.float32)
 
+    def get_oig_ignored_objects(self) -> set[str]:
+        return {"robot", "table"}
+
     def get_belief(self) -> Belief | None:
         """Get current belief state from environment."""
         return self.env.belief

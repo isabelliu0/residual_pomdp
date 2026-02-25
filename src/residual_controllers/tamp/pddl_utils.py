@@ -101,6 +101,73 @@ def generate_pddl_problem(
     )
 
 
+def build_object_interaction_graph(
+    symbolic_plan: list[str],
+    ignored_objects: set[str] | None = None,
+) -> list[tuple[list[str], set[str]]]:
+    """Partition a symbolic plan into subsequences via an Object Interaction
+    Graph.
+
+    Each action's argument objects are nodes; objects co-occurring in
+    the same action are connected by an edge. Connected components
+    define object sets; consecutive plan actions whose objects share the
+    same component are grouped into one subsequence.
+
+    Returns a list of (action_subsequence, object_set) pairs.
+    """
+    ignored = ignored_objects or set()
+
+    parsed: list[tuple[str, list[str]]] = []
+    for action_str in symbolic_plan:
+        tokens = action_str.strip("() ").split()
+        args = [t for t in tokens[1:] if t not in ignored]
+        parsed.append((action_str, args))
+
+    all_objects: set[str] = set()
+    for _, args in parsed:
+        all_objects.update(args)
+
+    parent = {o: o for o in all_objects}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(x: str, y: str) -> None:
+        rx, ry = _find(x), _find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    for _, args in parsed:
+        for i in range(1, len(args)):
+            _union(args[0], args[i])
+
+    if not parsed:
+        return []
+
+    subsequences: list[tuple[list[str], set[str]]] = []
+    current_actions: list[str] = []
+    current_objects: set[str] = set()
+    current_key: str | None = None
+
+    for action_str, args in parsed:
+        key = _find(args[0]) if args else None
+        if key != current_key and current_actions:
+            subsequences.append((current_actions, current_objects))
+            current_actions = []
+            current_objects = set()
+        current_key = key
+        current_actions.append(action_str)
+        current_objects.update(args)
+
+    if current_actions:
+        subsequences.append((current_actions, current_objects))
+
+    return subsequences
+
+
 def run_symbolic_planner(
     domain_name: str,
     types: set[Type],

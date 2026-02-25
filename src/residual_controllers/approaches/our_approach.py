@@ -13,6 +13,7 @@ from residual_controllers.approaches.base import (
     BaseApproach,
 )
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
+from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
 
 
 class ExecutionMode(Enum):
@@ -79,6 +80,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._nbv_state: NBVState | None = None
         self._last_info: dict[str, Any] = {}
         self._symbolic_plan: list[str] | None = None
+        self._oig_subsequences: list[tuple[list[str], set[str]]] = []
 
     def reset(self, _obs: Any, info: dict[str, Any]) -> ApproachStepResult[Any]:
         self.metrics = TampNbvMetrics()
@@ -87,6 +89,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._plan_idx = 0
         self._nbv_state = None
         self._last_info = info
+        self._oig_subsequences = []
 
         self._target_id = info.get("target_object_id")
         if self._target_id is None:
@@ -99,6 +102,13 @@ class TampNbvApproach(BaseApproach[Any, Any]):
 
         self._symbolic_plan = self.system.get_symbolic_plan()
         print(f"[TAMP] Initial symbolic plan: {self._symbolic_plan}")
+
+        if self._symbolic_plan is not None:
+            ignored = self.system.get_oig_ignored_objects()
+            self._oig_subsequences = build_object_interaction_graph(
+                self._symbolic_plan, ignored
+            )
+            print(f"[TAMP] OIG subsequences: {self._oig_subsequences}")
 
         return self._decide_next_action(info)
 

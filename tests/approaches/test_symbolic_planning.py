@@ -9,6 +9,7 @@ from residual_controllers.envs.tabletop_tamp import (
     create_tabletop_operators,
 )
 from residual_controllers.tamp.pddl_utils import (
+    build_object_interaction_graph,
     generate_pddl_domain,
     generate_pddl_problem,
 )
@@ -72,5 +73,30 @@ def test_optimistic_atoms_and_symbolic_plan():
 
     assert symbolic_plan is not None
     assert len(symbolic_plan) >= 2  # at least pick + place
+
+    system.close()
+
+
+def test_oig_single_subsequence():
+    """OIG on the tabletop plan produces one subsequence with the target
+    object."""
+    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    system.reset(seed=42)
+
+    symbolic_plan = system.get_symbolic_plan()
+    assert symbolic_plan is not None
+
+    ignored = system.get_oig_ignored_objects()
+    subsequences = build_object_interaction_graph(symbolic_plan, ignored)
+
+    print("\n=== OIG subsequences ===")
+    for actions, obj_set in subsequences:
+        print(f"  actions={actions}, objects={obj_set}")
+
+    assert len(subsequences) == 1
+    _, obj_set = subsequences[0]
+    assert "a" in obj_set
+    assert "robot" not in obj_set
+    assert "table" not in obj_set
 
     system.close()
