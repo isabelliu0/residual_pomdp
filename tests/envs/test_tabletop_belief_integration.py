@@ -267,13 +267,10 @@ def test_particle_filter_diagnostics():
 
     for step, action in enumerate(scan_actions):
         camera_image = env.get_camera_image()
-        camera_pose = env.get_camera_pose_se3()
 
         diagnostics = compute_belief_diagnostics(
             env.belief,
             camera_image,
-            camera_pose,
-            env.camera_intrinsics,
             env.scene.object_ids,
             env.physics_client_id,
         )

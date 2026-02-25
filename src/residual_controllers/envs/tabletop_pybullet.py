@@ -458,24 +458,30 @@ class TabletopPickEnv(gym.Env):
             "target_area_pose": target_area_pose_arr,
         }
 
-    def get_obs_from_mean(self, mean_state: TabletopState) -> dict:
+    def get_obs_from_mean(
+        self, mean_state: TabletopState, source_object_ids: list[int]
+    ) -> dict:
         """Build an obs dict with object poses from the belief mean state.
 
         Sets simulation env's object/joint positions to match the mean
         state so that subsequent pybullet queries (collision, on-
         relations) are consistent. Objects whose mean pose is None
         (unknown) are left at their current pybullet positions.
+
+        source_object_ids: the env whose belief produced mean_state, used
+        to map belief poses to this sim's objects by index rather than by
+        pybullet body ID (which differ across physics clients).
         """
         assert self.robot is not None
         assert self.scene is not None
 
         self.robot.set_joints(list(mean_state.joint_positions))
 
-        for obj_id in self.scene.object_ids:
-            mean_pose = mean_state.object_poses.get(obj_id)
+        for sim_obj_id, src_obj_id in zip(self.scene.object_ids, source_object_ids):
+            mean_pose = mean_state.object_poses.get(src_obj_id)
             if mean_pose is not None:
                 set_pose(
-                    obj_id,
+                    sim_obj_id,
                     Pose(position=mean_pose[:3], orientation=mean_pose[3:]),
                     self.physics_client_id,
                 )

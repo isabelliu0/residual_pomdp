@@ -81,12 +81,12 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
             self._plan_env.reset(seed=seed or self._seed)
 
         self._plan_env.set_state(self.env.get_state())
-        # NOTE: Investigating planning failure due to deviated mean particle compared to real-world state.  # pylint: disable=line-too-long
-        obs = self._plan_env.get_observation()
-        print(f"Real obs: {obs}")
-        print(
-            f"Plan env obs: {self._plan_env.get_obs_from_mean(get_mean_state(self.env.belief))}"  # pylint: disable=line-too-long
-        )
+        if self.env.belief is not None:
+            obs = self._plan_env.get_obs_from_mean(
+                get_mean_state(self.env.belief), self.env.scene.object_ids
+            )
+        else:
+            obs = self._plan_env.get_observation()
 
         types = TabletopTypes()
         predicates = TabletopPredicates(types)

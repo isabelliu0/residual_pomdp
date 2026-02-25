@@ -127,9 +127,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
 
     def _should_do_nbv(self, info: dict[str, Any]) -> bool:
         if hasattr(self.system, "is_target_unknown"):
-            target_unknown = self.system.is_target_unknown(info)
-            print(f"[NBV] Target unknown: {target_unknown}")
-            return target_unknown
+            return self.system.is_target_unknown(info)
         return False
 
     def _step_nbv(self, _info: dict[str, Any]) -> ApproachStepResult[Any]:

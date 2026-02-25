@@ -31,7 +31,9 @@ def test_tabletop_with_tamp():
     sim.set_state(env.get_state())
 
     assert base_env.belief is not None
-    belief_obs = sim.get_obs_from_mean(get_mean_state(base_env.belief))
+    belief_obs = sim.get_obs_from_mean(
+        get_mean_state(base_env.belief), base_env.scene.object_ids
+    )
 
     types = TabletopTypes()
     predicates = TabletopPredicates(types)
