@@ -19,6 +19,7 @@ from residual_controllers.envs.tabletop_tamp import (
 )
 from residual_controllers.information_gathering import NBVPlanner
 from residual_controllers.information_gathering.nbv_planner import ViewpointCandidate
+from residual_controllers.tamp.pddl_utils import run_symbolic_planner
 from residual_controllers.tamp.sesame_runner import run_tamp
 from residual_controllers.tamp.structs import PlanningComponents
 
@@ -66,19 +67,17 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
             radius_range=(0.25, 0.35),
             elevation_range=(0.6, 1.3),
         )
-
-    def plan(self, seed: int | None = None):
-        """Run TAMP planning using SeSamE planner.
-
-        Creates a separate planning env and syncs state from real env.
-        """
         if self._plan_env is None:
             self._plan_env = TabletopPickEnv(
                 gui=False,
                 num_objects=self.num_objects,
                 occlusion_prob=self.occlusion_prob,
             )
-            self._plan_env.reset(seed=seed or self._seed)
+            self._plan_env.reset(seed=self._seed)
+
+    def plan(self, seed: int | None = None):
+        """Run TAMP planning using SeSamE planner."""
+        assert self._plan_env is not None
 
         self._plan_env.set_state(self.env.get_state())
         if self.env.belief is not None:
@@ -118,6 +117,40 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         )
 
         return plan
+
+    def get_symbolic_plan(self, planner: str = "pyperplan") -> list[str] | None:
+        assert self._plan_env is not None
+
+        if self.env.belief is not None:
+            held_obs = self._plan_env.get_obs_from_mean(
+                get_mean_state(self.env.belief), self.env.scene.object_ids
+            )
+        else:
+            held_obs = self._plan_env.get_observation()
+
+        types = TabletopTypes()
+        predicates = TabletopPredicates(types)
+        operators = create_tabletop_operators(types, predicates)
+        abstractor = TabletopAbstractor(self._plan_env, types, predicates)
+        objects, mean_init_atoms, goal_atoms = abstractor.reset(held_obs)
+
+        if self.env.belief is not None:
+            init_atoms = abstractor.get_atoms_from_belief_particles(
+                self.env.belief.particles, self.env.scene.object_ids, held_obs
+            )
+        else:
+            init_atoms = mean_init_atoms
+
+        return run_symbolic_planner(
+            domain_name="tabletop",
+            types=types.as_set(),
+            predicates=predicates.as_set(),
+            operators=operators,
+            objects=objects,
+            init_atoms=init_atoms,
+            goal_atoms=goal_atoms,
+            planner=planner,
+        )
 
     def get_noop_action(self) -> np.ndarray:
         return np.zeros(8, dtype=np.float32)

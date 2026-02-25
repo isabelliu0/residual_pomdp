@@ -78,6 +78,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._target_id: int | None = None
         self._nbv_state: NBVState | None = None
         self._last_info: dict[str, Any] = {}
+        self._symbolic_plan: list[str] | None = None
 
     def reset(self, _obs: Any, info: dict[str, Any]) -> ApproachStepResult[Any]:
         self.metrics = TampNbvMetrics()
@@ -95,6 +96,9 @@ class TampNbvApproach(BaseApproach[Any, Any]):
                 terminate=True,
                 info={"error": "No target object specified"},
             )
+
+        self._symbolic_plan = self.system.get_symbolic_plan()
+        print(f"[TAMP] Initial symbolic plan: {self._symbolic_plan}")
 
         return self._decide_next_action(info)
 
