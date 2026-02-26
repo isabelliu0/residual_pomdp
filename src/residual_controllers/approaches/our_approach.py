@@ -13,6 +13,7 @@ from residual_controllers.approaches.base import (
     BaseApproach,
 )
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
+from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
 
 
 class ExecutionMode(Enum):
@@ -79,6 +80,8 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._nbv_state: NBVState | None = None
         self._last_info: dict[str, Any] = {}
         self._symbolic_plan: list[str] | None = None
+        self._oig_subsequences: list[tuple[list[str], set[str]]] = []
+        self._current_subseq_idx: int = 0
 
     def reset(self, _obs: Any, info: dict[str, Any]) -> ApproachStepResult[Any]:
         self.metrics = TampNbvMetrics()
@@ -87,6 +90,8 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._plan_idx = 0
         self._nbv_state = None
         self._last_info = info
+        self._oig_subsequences = []
+        self._current_subseq_idx = 0
 
         self._target_id = info.get("target_object_id")
         if self._target_id is None:
@@ -99,6 +104,13 @@ class TampNbvApproach(BaseApproach[Any, Any]):
 
         self._symbolic_plan = self.system.get_symbolic_plan()
         print(f"[TAMP] Initial symbolic plan: {self._symbolic_plan}")
+
+        if self._symbolic_plan is not None:
+            ignored = self.system.get_oig_ignored_objects()
+            self._oig_subsequences = build_object_interaction_graph(
+                self._symbolic_plan, ignored
+            )
+            print(f"[TAMP] OIG subsequences: {self._oig_subsequences}")
 
         return self._decide_next_action(info)
 
@@ -127,11 +139,12 @@ class TampNbvApproach(BaseApproach[Any, Any]):
     def _decide_next_action(self, info: dict[str, Any]) -> ApproachStepResult[Any]:
         if self._should_do_nbv(info):
             return self._step_nbv(info)
-        return self._step_plan()
+        return self._step_oig_plan()
 
-    def _should_do_nbv(self, info: dict[str, Any]) -> bool:
-        if hasattr(self.system, "is_target_unknown"):
-            return self.system.is_target_unknown(info)
+    def _should_do_nbv(self, _info: dict[str, Any]) -> bool:
+        if self._current_subseq_idx < len(self._oig_subsequences):
+            _, obj_set = self._oig_subsequences[self._current_subseq_idx]
+            return self.system.is_object_set_unknown(obj_set)
         return False
 
     def _step_nbv(self, _info: dict[str, Any]) -> ApproachStepResult[Any]:
@@ -219,44 +232,78 @@ class TampNbvApproach(BaseApproach[Any, Any]):
 
     def _exit_nbv_and_execute(self) -> ApproachStepResult[Any]:
         self._nbv_state = None
-        self._replan()
-        return self._step_plan()
-
-    def _replan(self) -> None:
-        print("[TAMP] Replanning...")
         self._plan_actions = []
         self._plan_idx = 0
-        self.metrics.tamp_replans += 1
-        plan = self.system.plan(seed=self._seed)
-        if plan is not None:
-            self._plan_actions = list(plan.actions)
-            print(f"[TAMP] Plan has {len(self._plan_actions)} actions")
-        else:
-            print("[TAMP] Planning failed")
+        return self._decide_next_action(self._last_info)
 
-    def _step_plan(self) -> ApproachStepResult[Any]:
-        self._mode = ExecutionMode.EXECUTING
-
-        if not self._plan_actions:
-            self._replan()
-
-        if self._plan_idx >= len(self._plan_actions):
+    def _step_oig_plan(self) -> ApproachStepResult[Any]:
+        if self._current_subseq_idx >= len(self._oig_subsequences):
             self._mode = ExecutionMode.DONE
-            self.metrics.success = False
             return ApproachStepResult(
                 action=self.system.get_noop_action(),
                 terminate=True,
                 info={"metrics": self.metrics, "mode": "done"},
             )
 
+        if not self._plan_actions:
+            self._replan_for_current_subsequence()
+
+        if not self._plan_actions:
+            self._mode = ExecutionMode.DONE
+            return ApproachStepResult(
+                action=self.system.get_noop_action(),
+                terminate=True,
+                info={
+                    "metrics": self.metrics,
+                    "mode": "done",
+                    "error": "planning_failed",
+                },
+            )
+
+        if self._plan_idx >= len(self._plan_actions):
+            print(f"[TAMP] Subsequence {self._current_subseq_idx} complete, advancing")
+            self._current_subseq_idx += 1
+            self._plan_actions = []
+            self._plan_idx = 0
+            return self._step_oig_plan()
+
+        self._mode = ExecutionMode.EXECUTING
         action = self._plan_actions[self._plan_idx]
         self._plan_idx += 1
         self.metrics.plan_actions += 1
-
         return ApproachStepResult(
             action=action,
-            info={"mode": "plan", "plan_step": self._plan_idx},
+            info={
+                "mode": "plan",
+                "plan_step": self._plan_idx,
+                "subseq_idx": self._current_subseq_idx,
+            },
         )
+
+    def _replan_for_current_subsequence(self) -> None:
+        self._plan_actions = []
+        self._plan_idx = 0
+        self.metrics.tamp_replans += 1
+
+        subseq_actions, _ = self._oig_subsequences[self._current_subseq_idx]
+        net_add, _ = self.system.get_subsequence_effects(subseq_actions)
+
+        print(
+            f"[TAMP] Replanning for subsequence {self._current_subseq_idx} "
+            f"with goal: {net_add}"
+        )
+
+        plan = (
+            self.system.plan_for_goal(net_add, seed=self._seed)
+            if net_add
+            else self.system.plan(seed=self._seed)
+        )
+
+        if plan is not None:
+            self._plan_actions = list(plan.actions)
+            print(f"[TAMP] Plan has {len(self._plan_actions)} actions")
+        else:
+            print("[TAMP] Planning failed")
 
     def get_metrics(self) -> TampNbvMetrics:
         """Get current metrics."""

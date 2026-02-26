@@ -19,7 +19,10 @@ from residual_controllers.envs.tabletop_tamp import (
 )
 from residual_controllers.information_gathering import NBVPlanner
 from residual_controllers.information_gathering.nbv_planner import ViewpointCandidate
-from residual_controllers.tamp.pddl_utils import run_symbolic_planner
+from residual_controllers.tamp.pddl_utils import (
+    compute_subsequence_effects,
+    run_symbolic_planner,
+)
 from residual_controllers.tamp.sesame_runner import run_tamp
 from residual_controllers.tamp.structs import PlanningComponents
 
@@ -47,6 +50,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         self._nbv_planner: NBVPlanner | None = None
         self._target_object_id: int | None = None
         self._plan_env: TabletopPickEnv | None = None
+        self.abstractor: TabletopAbstractor | None = None
         super().__init__(seed=seed)
 
     def _create_env(self) -> TabletopPickEnv:
@@ -59,6 +63,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
     def _on_reset(self, _obs: dict, info: dict[str, Any]) -> None:
         assert self.env.robot is not None
         self._target_object_id = info.get("target_object_id")
+        print(f"[ENV] Reset with target object ID: {self._target_object_id}")
         self._nbv_planner = NBVPlanner(
             robot=self.env.robot,
             camera_intrinsics=self.env.camera_intrinsics,
@@ -77,6 +82,13 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
 
     def plan(self, seed: int | None = None):
         """Run TAMP planning using SeSamE planner."""
+        return self._run_plan(goal_atoms_override=None, seed=seed)
+
+    def plan_for_goal(self, goal_atoms: Any, seed: int | None = None):
+        """Run bilevel planning toward specific goal atoms."""
+        return self._run_plan(goal_atoms_override=goal_atoms, seed=seed)
+
+    def _run_plan(self, goal_atoms_override: Any, seed: int | None):
         assert self._plan_env is not None
 
         self._plan_env.set_state(self.env.get_state())
@@ -98,7 +110,12 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
             abstractor=abstractor,
         )
         skills = create_tabletop_skills(types, operators, self._plan_env, abstractor)
-        _, _, goal_atoms = abstractor.reset(obs)
+        _, _, default_goal_atoms = abstractor.reset(obs)
+        goal_atoms = (
+            goal_atoms_override
+            if goal_atoms_override is not None
+            else default_goal_atoms
+        )
         goal = abstractor.create_abstract_goal(goal_atoms, abstractor.step)
 
         def transition_fn(_obs, action):
@@ -133,6 +150,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         operators = create_tabletop_operators(types, predicates)
         abstractor = TabletopAbstractor(self._plan_env, types, predicates)
         objects, mean_init_atoms, goal_atoms = abstractor.reset(held_obs)
+        self.abstractor = abstractor
 
         if self.env.belief is not None:
             init_atoms = abstractor.get_atoms_from_belief_particles(
@@ -154,6 +172,45 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
 
     def get_noop_action(self) -> np.ndarray:
         return np.zeros(8, dtype=np.float32)
+
+    def get_oig_ignored_objects(self) -> set[str]:
+        return {"robot", "table", "target_area"}
+
+    def get_subsequence_effects(
+        self, subsequence: list[str]
+    ) -> tuple[set[Any], set[Any]]:
+        if self.abstractor is None:
+            return set(), set()
+        types = TabletopTypes()
+        predicates = TabletopPredicates(types)
+        operators = create_tabletop_operators(types, predicates)
+        objects_by_name = {
+            obj.name.lower(): obj
+            for obj in self.abstractor._pybullet_ids  # pylint: disable=protected-access
+        }
+        return compute_subsequence_effects(subsequence, operators, objects_by_name)
+
+    def is_object_set_unknown(self, obj_names: set[str]) -> bool:
+        assert self.abstractor is not None and self._plan_env is not None
+        assert self.env.scene is not None and self._plan_env.scene is not None
+        belief = self.get_belief()
+        if belief is None:
+            return False
+        plan_to_main = {
+            plan_id: self.env.scene.object_ids[i]
+            for i, plan_id in enumerate(self._plan_env.scene.object_ids)
+            if i < len(self.env.scene.object_ids)
+        }
+        id_by_name = {
+            obj.name.lower(): plan_to_main[pid]
+            for obj, pid in self.abstractor._pybullet_ids.items()  # pylint: disable=protected-access
+            if pid in plan_to_main
+        }
+        return any(
+            id_by_name.get(name) in belief.unknown_objects
+            for name in obj_names
+            if id_by_name.get(name) is not None
+        )
 
     def get_belief(self) -> Belief | None:
         """Get current belief state from environment."""

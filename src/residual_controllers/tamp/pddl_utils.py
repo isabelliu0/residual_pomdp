@@ -101,6 +101,123 @@ def generate_pddl_problem(
     )
 
 
+def compute_subsequence_effects(
+    subsequence: list[str],
+    operators: set[LiftedOperator],
+    objects_by_name: dict[str, Object],
+) -> tuple[set[GroundAtom], set[GroundAtom]]:
+    """Compute net add/delete effects of a symbolic plan subsequence.
+
+    Returns (net_add, net_del). Keys in objects_by_name must be
+    lowercase to match pyperplan's lowercased plan output.
+    """
+    op_by_name = {op.name: op for op in operators}
+    net_add: set[GroundAtom] = set()
+    net_del: set[GroundAtom] = set()
+
+    for action_str in subsequence:
+        tokens = action_str.strip("() ").split()
+        op_name, obj_names = tokens[0], tokens[1:]
+        op = op_by_name.get(op_name)
+        if op is None:
+            continue
+
+        sub = {
+            var.name: objects_by_name[name]
+            for var, name in zip(op.parameters, obj_names)
+            if name in objects_by_name
+        }
+
+        for lifted_atom in op.add_effects:
+            try:
+                atom = GroundAtom(
+                    lifted_atom.predicate, [sub[v.name] for v in lifted_atom.entities]
+                )
+                net_del.discard(atom)
+                net_add.add(atom)
+            except KeyError:
+                pass
+
+        for lifted_atom in op.delete_effects:
+            try:
+                atom = GroundAtom(
+                    lifted_atom.predicate, [sub[v.name] for v in lifted_atom.entities]
+                )
+                net_add.discard(atom)
+                net_del.add(atom)
+            except KeyError:
+                pass
+
+    return net_add, net_del
+
+
+def build_object_interaction_graph(
+    symbolic_plan: list[str],
+    ignored_objects: set[str] | None = None,
+) -> list[tuple[list[str], set[str]]]:
+    """Partition a symbolic plan into subsequences via an Object Interaction
+    Graph.
+
+    Each action's argument objects are nodes; objects co-occurring in
+    the same action are connected by an edge. Connected components
+    define object sets; consecutive plan actions whose objects share the
+    same component are grouped into one subsequence.
+
+    Returns a list of (action_subsequence, object_set) pairs.
+    """
+    ignored = ignored_objects or set()
+
+    parsed: list[tuple[str, list[str]]] = []
+    for action_str in symbolic_plan:
+        tokens = action_str.strip("() ").split()
+        args = [t for t in tokens[1:] if t not in ignored]
+        parsed.append((action_str, args))
+
+    all_objects: set[str] = set()
+    for _, args in parsed:
+        all_objects.update(args)
+
+    parent = {o: o for o in all_objects}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(x: str, y: str) -> None:
+        rx, ry = _find(x), _find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    for _, args in parsed:
+        for i in range(1, len(args)):
+            _union(args[0], args[i])
+
+    if not parsed:
+        return []
+
+    subsequences: list[tuple[list[str], set[str]]] = []
+    current_actions: list[str] = []
+    current_objects: set[str] = set()
+    current_key: str | None = None
+
+    for action_str, args in parsed:
+        key = _find(args[0]) if args else None
+        if key != current_key and current_actions:
+            subsequences.append((current_actions, current_objects))
+            current_actions = []
+            current_objects = set()
+        current_key = key
+        current_actions.append(action_str)
+        current_objects.update(args)
+
+    if current_actions:
+        subsequences.append((current_actions, current_objects))
+
+    return subsequences
+
+
 def run_symbolic_planner(
     domain_name: str,
     types: set[Type],

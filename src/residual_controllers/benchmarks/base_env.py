@@ -59,6 +59,31 @@ class BaseTAMPSystem(Generic[ObsType, ActType], ABC):
         """Generate a symbolic (PDDL-only) task plan."""
         return None
 
+    def get_oig_ignored_objects(self) -> set[str]:
+        """Return object names to exclude from the Object Interaction Graph.
+
+        Override per environment to exclude always-known static objects
+        (e.g. robot, fixed surfaces) that would otherwise merge all
+        components.
+        """
+        return set()
+
+    def get_subsequence_effects(
+        self, _subsequence: list[str]
+    ) -> tuple[set[Any], set[Any]]:
+        """Compute net (add, delete) GroundAtom effects of a plan
+        subsequence."""
+        return set(), set()
+
+    def is_object_set_unknown(self, _obj_names: set[str]) -> bool:
+        """Return True if any object in obj_names is currently unknown in the
+        belief."""
+        return False
+
+    def plan_for_goal(self, _goal_atoms: Any, seed: int | None = None) -> Plan | None:
+        """Run bilevel planning toward the given goal atoms."""
+        return self.plan(seed=seed)
+
     def close(self) -> None:
         """Clean up resources."""
         self.env.close()
