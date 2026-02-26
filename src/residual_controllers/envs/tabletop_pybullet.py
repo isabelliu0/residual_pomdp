@@ -372,7 +372,6 @@ class TabletopPickEnv(gym.Env):
 
         obs = self.get_observation()
         info = {"target_object_id": object_ids[int(target_idx)]}
-        print(f"Reset environment with target object ID: {info['target_object_id']}")
 
         camera_image = self.get_camera_image()
         self.belief = create_initial_belief(self, camera_image, num_particles=100)

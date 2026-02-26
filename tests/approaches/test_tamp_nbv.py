@@ -10,6 +10,45 @@ from residual_controllers.approaches import TampNbvApproach, TampNbvConfig
 from residual_controllers.benchmarks import TabletopPickTAMPSystem
 
 
+def test_approach_tabletop():
+    """Smoke test for TampNbvApproach on TabletopPickTAMPSystem."""
+    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    obs, info = system.reset(seed=42)
+
+    config = TampNbvConfig(nbv_max_viewpoints=5, nbv_max_steps_per_viewpoint=20)
+    approach = TampNbvApproach(system, seed=42, config=config)
+
+    step_result = approach.reset(obs, info)
+    obs, reward, terminated, truncated, info = system.step(step_result.action)
+
+    for _ in range(200):
+        if step_result.terminate:
+            break
+        if terminated or truncated:
+            approach.step(obs, reward, terminated, truncated, info)
+            break
+        step_result = approach.step(obs, reward, terminated, truncated, info)
+        obs, reward, terminated, truncated, info = system.step(step_result.action)
+
+    metrics = approach.get_metrics()
+    print("\n=== TampNbv metrics ===")
+    print(f"  total_steps:            {metrics.total_steps}")
+    print(f"  nbv_calls:              {metrics.nbv_calls}")
+    print(f"  nbv_steps:              {metrics.nbv_steps}")
+    print(f"  nbv_viewpoints_selected:{metrics.nbv_viewpoints_selected}")
+    print(f"  nbv_viewpoints_reached: {metrics.nbv_viewpoints_reached}")
+    print(f"  nbv_early_termination:  {metrics.nbv_early_termination}")
+    print(f"  tamp_replans:           {metrics.tamp_replans}")
+    print(f"  plan_actions:           {metrics.plan_actions}")
+    print(f"  success:                {metrics.success}")
+
+    assert metrics.total_steps > 0
+    if metrics.nbv_calls > 0:
+        assert metrics.nbv_steps > 0
+
+    system.close()
+
+
 @pytest.mark.skip(reason="Outdated test.")
 def test_tamp_nbv():
     """Test the TAMP + NBV approach on the TabletopPickTAMPSystem."""

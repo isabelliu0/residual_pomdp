@@ -68,6 +68,22 @@ class BaseTAMPSystem(Generic[ObsType, ActType], ABC):
         """
         return set()
 
+    def get_subsequence_effects(
+        self, _subsequence: list[str]
+    ) -> tuple[set[Any], set[Any]]:
+        """Compute net (add, delete) GroundAtom effects of a plan
+        subsequence."""
+        return set(), set()
+
+    def is_object_set_unknown(self, _obj_names: set[str]) -> bool:
+        """Return True if any object in obj_names is currently unknown in the
+        belief."""
+        return False
+
+    def plan_for_goal(self, _goal_atoms: Any, seed: int | None = None) -> Plan | None:
+        """Run bilevel planning toward the given goal atoms."""
+        return self.plan(seed=seed)
+
     def close(self) -> None:
         """Clean up resources."""
         self.env.close()

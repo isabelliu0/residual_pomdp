@@ -101,6 +101,56 @@ def generate_pddl_problem(
     )
 
 
+def compute_subsequence_effects(
+    subsequence: list[str],
+    operators: set[LiftedOperator],
+    objects_by_name: dict[str, Object],
+) -> tuple[set[GroundAtom], set[GroundAtom]]:
+    """Compute net add/delete effects of a symbolic plan subsequence.
+
+    Returns (net_add, net_del). Keys in objects_by_name must be
+    lowercase to match pyperplan's lowercased plan output.
+    """
+    op_by_name = {op.name: op for op in operators}
+    net_add: set[GroundAtom] = set()
+    net_del: set[GroundAtom] = set()
+
+    for action_str in subsequence:
+        tokens = action_str.strip("() ").split()
+        op_name, obj_names = tokens[0], tokens[1:]
+        op = op_by_name.get(op_name)
+        if op is None:
+            continue
+
+        sub = {
+            var.name: objects_by_name[name]
+            for var, name in zip(op.parameters, obj_names)
+            if name in objects_by_name
+        }
+
+        for lifted_atom in op.add_effects:
+            try:
+                atom = GroundAtom(
+                    lifted_atom.predicate, [sub[v.name] for v in lifted_atom.entities]
+                )
+                net_del.discard(atom)
+                net_add.add(atom)
+            except KeyError:
+                pass
+
+        for lifted_atom in op.delete_effects:
+            try:
+                atom = GroundAtom(
+                    lifted_atom.predicate, [sub[v.name] for v in lifted_atom.entities]
+                )
+                net_add.discard(atom)
+                net_del.add(atom)
+            except KeyError:
+                pass
+
+    return net_add, net_del
+
+
 def build_object_interaction_graph(
     symbolic_plan: list[str],
     ignored_objects: set[str] | None = None,
