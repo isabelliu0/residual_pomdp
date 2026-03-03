@@ -330,3 +330,184 @@ def test_particle_filter_diagnostics():
     external_writer.close()
     wrist_writer.close()
     env.close()
+
+
+def test_table_surface_unseen_voxels():
+    """Print unseen voxels near table surface after reset and where unknown
+    object particles fall."""
+    env = TabletopPickEnv(gui=False, num_objects=5, occlusion_prob=0.7)
+    env.reset(seed=42)
+
+    assert env.belief is not None
+    assert env.belief.visibility_grid is not None
+    assert env.scene is not None
+
+    debug_ids: list[int] = []
+    # occupied_debug_ids: list[int] = []
+    if env.belief.visibility_grid is not None:
+        debug_ids = env.belief.visibility_grid.visualize(
+            env.physics_client_id, z_range=(0.0, 0.15)
+        )
+        # occupied_debug_ids = env.belief.visibility_grid.visualize_occupied(
+        #     env.physics_client_id, z_range=(0.0, 0.15)
+        # )
+
+    noop = np.zeros(8, dtype=np.float32)
+    for _ in range(1):
+        env.step(noop)
+        LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
+        # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, env.physics_client_id)  # pylint: disable=line-too-long
+        debug_ids = env.belief.visibility_grid.visualize(
+            env.physics_client_id, z_range=(0.0, 0.15)
+        )
+        # occupied_debug_ids = env.belief.visibility_grid.visualize_occupied(
+        #     env.physics_client_id, z_range=(0.0, 0.15)
+        # )
+        time.sleep(0.5)
+
+    grid = env.belief.visibility_grid
+    table_z_min, table_z_max = 0.0, 0.05
+
+    unseen = grid.get_unobserved_voxels()
+    unseen_table = [(x, y, z) for x, y, z in unseen if table_z_min <= z <= table_z_max]
+    free_table = [
+        (x, y, z)
+        for x, y, z in grid.get_free_voxels()
+        if table_z_min <= z <= table_z_max
+    ]
+
+    print(f"\n{'='*60}")
+    print(f"TABLE SURFACE UNSEEN VOXELS (z in [{table_z_min}, {table_z_max}])")
+    print(f"  Unseen: {len(unseen_table)}   Free: {len(free_table)}")
+
+    if unseen_table:
+        xs = [v[0] for v in unseen_table]
+        ys = [v[1] for v in unseen_table]
+        print(
+            f"  x range: [{min(xs):.3f}, {max(xs):.3f}]   y range: [{min(ys):.3f}, {max(ys):.3f}]"  # pylint: disable=line-too-long
+        )
+
+        x_bins = np.linspace(0.0, 1.0, 9)
+        y_bins = np.linspace(-0.5, 0.5, 7)
+        counts = np.zeros((len(x_bins) - 1, len(y_bins) - 1), dtype=int)
+        for x, y, _ in unseen_table:
+            xi = int(np.clip(np.searchsorted(x_bins, x) - 1, 0, counts.shape[0] - 1))
+            yi = int(np.clip(np.searchsorted(y_bins, y) - 1, 0, counts.shape[1] - 1))
+            counts[xi, yi] += 1
+        print("\n  2D density of unseen voxels (x=rows, y=cols):")
+        print(
+            "  x\\y  "
+            + "  ".join(
+                f"{(y_bins[i]+y_bins[i+1])/2:+.2f}" for i in range(len(y_bins) - 1)
+            )
+        )
+        for i in range(counts.shape[0]):
+            row = "  ".join(f"{counts[i, j]:4d}" for j in range(counts.shape[1]))
+            print(f"  {(x_bins[i]+x_bins[i+1])/2:.2f}  {row}")
+
+    print(
+        f"\n  Known: {env.belief.known_objects}   Unknown: {env.belief.unknown_objects}"
+    )
+
+    all_particle_poses: dict[int, list] = {}
+    for particle in env.belief.particles:
+        for obj_id in env.scene.object_ids:
+            if obj_id in env.belief.unknown_objects and obj_id in particle.object_poses:
+                all_particle_poses.setdefault(obj_id, []).append(
+                    particle.object_poses[obj_id]
+                )
+
+    for obj_id, poses in all_particle_poses.items():
+        n_in_unseen = sum(
+            1
+            for pos in poses
+            if not grid.is_free((pos[0], pos[1], pos[2]))
+            and not grid.is_occupied((pos[0], pos[1], pos[2]))
+        )
+        print(
+            f"  Unknown obj {obj_id}: {n_in_unseen}/{len(poses)} particles in unseen region"  # pylint: disable=line-too-long
+        )
+
+    print(f"{'='*60}\n")
+    assert len(unseen_table) > 0, "Expected unseen voxels at table surface after reset"
+
+    LogOddsOccupancyGrid.clear_visualization(debug_ids, env.physics_client_id)
+    # LogOddsOccupancyGrid.clear_visualization(occupied_debug_ids, env.physics_client_id)  # pylint: disable=line-too-long
+    env.close()
+
+
+def test_unknown_target_particle_distribution():
+    """Print particle distribution for the target object after reset."""
+    env = TabletopPickEnv(gui=False, num_objects=5, occlusion_prob=0.7)
+    _, info = env.reset(seed=42)
+
+    assert env.belief is not None
+    assert env.belief.visibility_grid is not None
+    assert env.scene is not None
+
+    target_id = info.get("target_object_id")
+    assert target_id is not None
+
+    gt_pos = np.array(
+        p.getBasePositionAndOrientation(
+            target_id, physicsClientId=env.physics_client_id
+        )[0]
+    )
+
+    status = (
+        "known"
+        if target_id in env.belief.known_objects
+        else "occluded" if target_id in env.belief.occluded_objects else "unknown"
+    )
+
+    particle_xys = np.array(
+        [
+            [particle.object_poses[target_id][0], particle.object_poses[target_id][1]]
+            for particle in env.belief.particles
+            if target_id in particle.object_poses
+        ]
+    )
+
+    print(f"\n{'='*60}")
+    print("TARGET OBJECT PARTICLE DISTRIBUTION")
+    print(
+        f"  target_id={target_id}  status={status}  confidence={env.belief.object_confidence.get(target_id, 0.0):.3f}"  # pylint: disable=line-too-long
+    )
+    print(f"  ground truth (x,y): ({gt_pos[0]:.3f}, {gt_pos[1]:.3f})")
+    print(f"  n particles: {len(particle_xys)}")
+
+    if len(particle_xys) > 0:
+        mean_xy = particle_xys.mean(axis=0)
+        std_xy = particle_xys.std(axis=0)
+        print(f"  mean (x,y): ({mean_xy[0]:.3f}, {mean_xy[1]:.3f})")
+        print(f"  std  (x,y): ({std_xy[0]:.3f}, {std_xy[1]:.3f})")
+        print(f"  mean error from GT: {np.linalg.norm(mean_xy - gt_pos[:2]):.3f} m")
+
+        x_bins = np.linspace(0.0, 1.0, 9)
+        y_bins = np.linspace(-0.5, 0.5, 7)
+        counts = np.zeros((len(x_bins) - 1, len(y_bins) - 1), dtype=int)
+        for x, y in particle_xys:
+            xi = int(np.clip(np.searchsorted(x_bins, x) - 1, 0, counts.shape[0] - 1))
+            yi = int(np.clip(np.searchsorted(y_bins, y) - 1, 0, counts.shape[1] - 1))
+            counts[xi, yi] += 1
+        print("\n  2D particle density (x=rows, y=cols):")
+        print(
+            "  x\\y  "
+            + "  ".join(
+                f"{(y_bins[i]+y_bins[i+1])/2:+.2f}" for i in range(len(y_bins) - 1)
+            )
+        )
+        for i in range(counts.shape[0]):
+            row = "  ".join(f"{counts[i, j]:4d}" for j in range(counts.shape[1]))
+            print(f"  {(x_bins[i]+x_bins[i+1])/2:.2f}  {row}")
+
+        grid = env.belief.visibility_grid
+        n_in_unseen = sum(
+            1
+            for x, y in particle_xys
+            if not grid.is_free((float(x), float(y), gt_pos[2]))
+            and not grid.is_occupied((float(x), float(y), gt_pos[2]))
+        )
+        print(f"\n  particles in unseen region: {n_in_unseen}/{len(particle_xys)}")
+
+    print(f"{'='*60}\n")

@@ -207,7 +207,7 @@ class TabletopPickEnv(gym.Env):
 
         target_y_range: tuple[float, float] = (-0.3, 0.3)
         if np.random.random() < self.occlusion_prob:
-            target_y_range = (-0.3, -0.1)
+            target_y_range = (-0.5, -0.3)
 
         target_pose = self._sample_free_object_pose(
             target_obj,
@@ -495,10 +495,11 @@ class TabletopPickEnv(gym.Env):
         rot_matrix = np.array(rot_matrix).reshape((3, 3))
         target_point = np.array(camera_pose.position) + rot_matrix @ camera_z_axis
 
+        camera_up = tuple(-rot_matrix[:, 1])
         view_matrix = p.computeViewMatrix(
             cameraEyePosition=camera_pose.position,
             cameraTargetPosition=tuple(target_point),
-            cameraUpVector=[0, 0, 1],
+            cameraUpVector=camera_up,
             physicsClientId=self.physics_client_id,
         )
 
@@ -584,6 +585,10 @@ class TabletopPickEnv(gym.Env):
 
             camera_image = self.get_camera_image()
             camera_pose = self.get_camera_pose_se3()
+            area_pos, _ = p.getBasePositionAndOrientation(
+                self.scene.target_area_id, physicsClientId=self.physics_client_id
+            )
+            excluded_xys = [(float(area_pos[0]), float(area_pos[1]), 0.1)]
             self.belief = update_belief(
                 self.belief,
                 camera_image,
@@ -591,6 +596,8 @@ class TabletopPickEnv(gym.Env):
                 self.camera_intrinsics,
                 self.scene.object_ids,
                 self.physics_client_id,
+                table_id=self.scene.table_id,
+                excluded_xys=excluded_xys,
             )
 
         obs = self.get_observation()

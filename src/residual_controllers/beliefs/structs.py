@@ -57,8 +57,8 @@ class BeliefConfig:
     occupied_min: float = 0.6
 
     # Occupancy grid ray-casting
-    grid_stride: int = 20
-    free_space_margin: float = 0.02
+    grid_stride: int = 10
+    free_space_margin: float = 0.015
     free_update: float = 0.3
     occ_update: float = 2.0
     object_thickness: float = 0.05
@@ -74,7 +74,7 @@ class BeliefConfig:
 
     # Object confidence decay
     visible_missing_decay: float = 0.6
-    occluded_decay: float = 0.95
+    occluded_decay: float = 1.0
     never_seen_decay: float = 0.9
     confidence_known_threshold: float = 0.6
 
