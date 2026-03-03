@@ -52,16 +52,51 @@ class BeliefUpdateDiagnostics:
 
 
 def _sample_on_table_pose(
-    obj_id: int, table_id: int, physics_client_id: int
+    obj_id: int,
+    table_id: int,
+    physics_client_id: int,
+    visibility_grid: LogOddsOccupancyGrid | None = None,
+    excluded_xys: list[tuple[float, float, float]] | None = None,
 ) -> SE3Pose:
-    """Sample a random pose for obj placed flat on the table surface."""
+    """Sample a random pose for obj placed flat on the table surface.
+
+    If visibility_grid is provided, samples (x, y) from unseen voxels
+    near the table surface rather than uniformly. excluded_xys is a list
+    of (cx, cy, radius) zones to exclude from candidate positions.
+    """
     table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
     table_top_z = float(table_aabb[1][2])
     obj_aabb = p.getAABB(obj_id, physicsClientId=physics_client_id)
     obj_half_z = float((obj_aabb[1][2] - obj_aabb[0][2]) / 2.0)
+    z = table_top_z + obj_half_z
+
+    def _excluded(vx: float, vy: float) -> bool:
+        if excluded_xys is None:
+            return False
+        return any((vx - cx) ** 2 + (vy - cy) ** 2 < r**2 for cx, cy, r in excluded_xys)
+
+    if visibility_grid is not None:
+        unseen = visibility_grid.get_unobserved_voxels()
+        surface_xy = [
+            (vx, vy)
+            for vx, vy, vz in unseen
+            if abs(vz - table_top_z) < 0.05
+            and table_aabb[0][0] <= vx <= table_aabb[1][0]
+            and table_aabb[0][1] <= vy <= table_aabb[1][1]
+            and not _excluded(vx, vy)
+        ]
+        if surface_xy:
+            vx, vy = surface_xy[np.random.randint(len(surface_xy))]
+            return (float(vx), float(vy), z, 0.0, 0.0, 0.0, 1.0)
+
+    for _ in range(100):
+        x = float(np.random.uniform(table_aabb[0][0], table_aabb[1][0]))
+        y = float(np.random.uniform(table_aabb[0][1], table_aabb[1][1]))
+        if not _excluded(x, y):
+            return (x, y, z, 0.0, 0.0, 0.0, 1.0)
+
     x = float(np.random.uniform(table_aabb[0][0], table_aabb[1][0]))
     y = float(np.random.uniform(table_aabb[0][1], table_aabb[1][1]))
-    z = table_top_z + obj_half_z
     return (x, y, z, 0.0, 0.0, 0.0, 1.0)
 
 
@@ -87,32 +122,6 @@ def create_initial_belief(
     for obj_id in known_objects:
         object_confidence[obj_id] = 1.0
 
-    particles = []
-    for _ in range(num_particles):
-        joint_positions = tuple(env.robot.get_joint_positions())
-        gripper_open = 0.04
-
-        object_poses: dict[int, SE3Pose] = {}
-
-        for obj_id in known_objects:
-            detected_pose, _ = detections[obj_id]
-            noisy_pose = add_pose_noise(detected_pose, pos_std=0.01, rot_std=0.09)
-            object_poses[obj_id] = noisy_pose
-
-        for obj_id in unknown_objects:
-            object_poses[obj_id] = _sample_on_table_pose(
-                obj_id, env.scene.table_id, env.physics_client_id
-            )
-
-        state = TabletopState(
-            joint_positions=joint_positions,
-            gripper_open=gripper_open,
-            object_poses=object_poses,
-        )
-        particles.append(state)
-
-    weights = np.ones(num_particles, dtype=np.float32) / num_particles
-
     visibility_grid = LogOddsOccupancyGrid(
         bounds=[[0.2, 0.8], [-0.4, 0.4], [0.0, 0.5]],
         resolution=0.015,
@@ -133,6 +142,47 @@ def create_initial_belief(
         dense_window=config.dense_window,
         depth_noise_scale=config.depth_noise_scale,
     )
+
+    excluded_xys: list[tuple[float, float, float]] = []
+    if (
+        hasattr(env, "scene")
+        and env.scene is not None
+        and hasattr(env.scene, "target_area_id")
+    ):
+        area_pos, _ = p.getBasePositionAndOrientation(
+            env.scene.target_area_id, physicsClientId=env.physics_client_id
+        )
+        excluded_xys.append((float(area_pos[0]), float(area_pos[1]), 0.1))
+
+    particles = []
+    for _ in range(num_particles):
+        joint_positions = tuple(env.robot.get_joint_positions())
+        gripper_open = 0.04
+
+        object_poses: dict[int, SE3Pose] = {}
+
+        for obj_id in known_objects:
+            detected_pose, _ = detections[obj_id]
+            noisy_pose = add_pose_noise(detected_pose, pos_std=0.01, rot_std=0.09)
+            object_poses[obj_id] = noisy_pose
+
+        for obj_id in unknown_objects:
+            object_poses[obj_id] = _sample_on_table_pose(
+                obj_id,
+                env.scene.table_id,
+                env.physics_client_id,
+                visibility_grid,
+                excluded_xys,
+            )
+
+        state = TabletopState(
+            joint_positions=joint_positions,
+            gripper_open=gripper_open,
+            object_poses=object_poses,
+        )
+        particles.append(state)
+
+    weights = np.ones(num_particles, dtype=np.float32) / num_particles
 
     return Belief(
         particles=particles,
@@ -198,6 +248,8 @@ def update_belief(
     object_ids: list[int],
     physics_client_id: int,
     config: BeliefConfig | None = None,
+    table_id: int | None = None,
+    excluded_xys: list[tuple[float, float, float]] | None = None,
 ) -> Belief:
     """Update belief from new camera observation."""
     detections = detect_objects_from_segmentation(
@@ -368,6 +420,30 @@ def update_belief(
             dense_window=config.dense_window,
             depth_noise_scale=config.depth_noise_scale,
         )
+
+        if table_id is not None and unknown_objects:
+            never_seen = unknown_objects - occluded_objects
+            if never_seen:
+                resampled = []
+                for particle in new_particles:
+                    new_poses = dict(particle.object_poses)
+                    for obj_id in never_seen:
+                        if obj_id not in detections:
+                            new_poses[obj_id] = _sample_on_table_pose(
+                                obj_id,
+                                table_id,
+                                physics_client_id,
+                                belief.visibility_grid,
+                                excluded_xys,
+                            )
+                    resampled.append(
+                        TabletopState(
+                            joint_positions=particle.joint_positions,
+                            gripper_open=particle.gripper_open,
+                            object_poses=new_poses,
+                        )
+                    )
+                new_particles = resampled
 
     return Belief(
         particles=new_particles,

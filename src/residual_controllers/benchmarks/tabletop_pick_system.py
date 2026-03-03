@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pybullet as p
 
 from residual_controllers.beliefs import get_mean_state
 from residual_controllers.beliefs.structs import Belief
@@ -190,27 +191,79 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         }
         return compute_subsequence_effects(subsequence, operators, objects_by_name)
 
-    def is_object_set_unknown(self, obj_names: set[str]) -> bool:
-        assert self.abstractor is not None and self._plan_env is not None
+    def _name_to_main_id_map(self) -> dict[str, int]:
+        """Map symbolic object names to main-env body IDs via positional cross-
+        client mapping."""
+        if self.abstractor is None or self._plan_env is None:
+            return {}
         assert self.env.scene is not None and self._plan_env.scene is not None
-        belief = self.get_belief()
-        if belief is None:
-            return False
         plan_to_main = {
             plan_id: self.env.scene.object_ids[i]
             for i, plan_id in enumerate(self._plan_env.scene.object_ids)
             if i < len(self.env.scene.object_ids)
         }
-        id_by_name = {
+        return {
             obj.name.lower(): plan_to_main[pid]
             for obj, pid in self.abstractor._pybullet_ids.items()  # pylint: disable=protected-access
             if pid in plan_to_main
         }
+
+    def is_object_set_unknown(self, obj_names: set[str]) -> bool:
+        belief = self.get_belief()
+        if belief is None:
+            return False
+        id_map = self._name_to_main_id_map()
         return any(
-            id_by_name.get(name) in belief.unknown_objects
+            id_map.get(name) in belief.unknown_objects
             for name in obj_names
-            if id_by_name.get(name) is not None
+            if id_map.get(name) is not None
         )
+
+    def get_object_ids_for_names(self, names: set[str]) -> dict[str, int]:
+        """Get main-env body IDs for a set of symbolic object names."""
+        id_map = self._name_to_main_id_map()
+        return {name: id_map[name] for name in names if name in id_map}
+
+    def check_atoms_satisfied(self, atoms: set) -> bool:
+        """Check if symbolic atoms are satisfied in the current environment
+        state."""
+        if not atoms:
+            return True
+        if self.abstractor is None or self._plan_env is None:
+            return False
+        assert self.env.scene is not None
+        self._plan_env.set_state(self.env.get_state())
+        if self.env.belief is not None:
+            obs = self._plan_env.get_obs_from_mean(
+                get_mean_state(self.env.belief), self.env.scene.object_ids
+            )
+        else:
+            obs = self._plan_env.get_observation()
+        abstract_state = self.abstractor.step(obs)
+        return atoms.issubset(abstract_state.atoms)
+
+    def get_ground_truth_object_poses(self, obj_ids: list[int]) -> dict[int, tuple]:
+        """Get ground-truth object poses directly from PyBullet (for training
+        only)."""
+        poses = {}
+        for obj_id in obj_ids:
+            pos, quat = p.getBasePositionAndOrientation(
+                obj_id, physicsClientId=self.env.physics_client_id
+            )
+            poses[obj_id] = pos + quat
+        return poses
+
+    def plan_for_goal_with_belief(
+        self, goal_atoms: Any, belief_override: Any, seed: int | None = None
+    ):
+        """Plan toward goal atoms using a specified belief (for training data
+        collection)."""
+        original_belief = self.env.belief
+        self.env.belief = belief_override
+        try:
+            return self._run_plan(goal_atoms_override=goal_atoms, seed=seed)
+        finally:
+            self.env.belief = original_belief
 
     def get_belief(self) -> Belief | None:
         """Get current belief state from environment."""
