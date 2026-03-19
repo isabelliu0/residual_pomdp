@@ -51,18 +51,47 @@ class BeliefUpdateDiagnostics:
     weight_max_after: float = 0.0
 
 
+def _precompute_surface_xy(
+    visibility_grid: LogOddsOccupancyGrid,
+    table_id: int,
+    physics_client_id: int,
+    excluded_xys: list[tuple[float, float, float]] | None = None,
+) -> list[tuple[float, float]]:
+    """Precompute unseen surface (x, y) candidates from the occupancy grid.
+
+    Call this once before a particle resampling loop and pass the result to
+    _sample_on_table_pose to avoid recomputing the sigmoid over all voxels
+    for every particle.
+    """
+    table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
+    table_top_z = float(table_aabb[1][2])
+    unseen = visibility_grid.get_unobserved_voxels()
+    surface_xy = []
+    for vx, vy, vz in unseen:
+        if not (abs(vz - table_top_z) < 0.05):
+            continue
+        if not (table_aabb[0][0] <= vx <= table_aabb[1][0]):
+            continue
+        if not (table_aabb[0][1] <= vy <= table_aabb[1][1]):
+            continue
+        if excluded_xys and any(
+            (vx - cx) ** 2 + (vy - cy) ** 2 < r**2 for cx, cy, r in excluded_xys
+        ):
+            continue
+        surface_xy.append((vx, vy))
+    return surface_xy
+
+
 def _sample_on_table_pose(
     obj_id: int,
     table_id: int,
     physics_client_id: int,
-    visibility_grid: LogOddsOccupancyGrid | None = None,
-    excluded_xys: list[tuple[float, float, float]] | None = None,
+    precomputed_surface_xy: list[tuple[float, float]] | None = None,
 ) -> SE3Pose:
     """Sample a random pose for obj placed flat on the table surface.
 
-    If visibility_grid is provided, samples (x, y) from unseen voxels
-    near the table surface rather than uniformly. excluded_xys is a list
-    of (cx, cy, radius) zones to exclude from candidate positions.
+    Pass precomputed_surface_xy (from _precompute_surface_xy) to bias sampling
+    toward unseen voxels. Falls back to uniform sampling over the table.
     """
     table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
     table_top_z = float(table_aabb[1][2])
@@ -70,30 +99,9 @@ def _sample_on_table_pose(
     obj_half_z = float((obj_aabb[1][2] - obj_aabb[0][2]) / 2.0)
     z = table_top_z + obj_half_z
 
-    def _excluded(vx: float, vy: float) -> bool:
-        if excluded_xys is None:
-            return False
-        return any((vx - cx) ** 2 + (vy - cy) ** 2 < r**2 for cx, cy, r in excluded_xys)
-
-    if visibility_grid is not None:
-        unseen = visibility_grid.get_unobserved_voxels()
-        surface_xy = [
-            (vx, vy)
-            for vx, vy, vz in unseen
-            if abs(vz - table_top_z) < 0.05
-            and table_aabb[0][0] <= vx <= table_aabb[1][0]
-            and table_aabb[0][1] <= vy <= table_aabb[1][1]
-            and not _excluded(vx, vy)
-        ]
-        if surface_xy:
-            vx, vy = surface_xy[np.random.randint(len(surface_xy))]
-            return (float(vx), float(vy), z, 0.0, 0.0, 0.0, 1.0)
-
-    for _ in range(100):
-        x = float(np.random.uniform(table_aabb[0][0], table_aabb[1][0]))
-        y = float(np.random.uniform(table_aabb[0][1], table_aabb[1][1]))
-        if not _excluded(x, y):
-            return (x, y, z, 0.0, 0.0, 0.0, 1.0)
+    if precomputed_surface_xy:
+        vx, vy = precomputed_surface_xy[np.random.randint(len(precomputed_surface_xy))]
+        return (float(vx), float(vy), z, 0.0, 0.0, 0.0, 1.0)
 
     x = float(np.random.uniform(table_aabb[0][0], table_aabb[1][0]))
     y = float(np.random.uniform(table_aabb[0][1], table_aabb[1][1]))
@@ -123,8 +131,8 @@ def create_initial_belief(
         object_confidence[obj_id] = 1.0
 
     visibility_grid = LogOddsOccupancyGrid(
-        bounds=[[0.2, 0.8], [-0.4, 0.4], [0.0, 0.5]],
-        resolution=0.015,
+        bounds=config.grid_bounds,
+        resolution=config.grid_resolution,
         thresholds=config,
     )
     visibility_grid.update_from_depth(
@@ -154,6 +162,12 @@ def create_initial_belief(
         )
         excluded_xys.append((float(area_pos[0]), float(area_pos[1]), 0.1))
 
+    surface_xy: list[tuple[float, float]] | None = None
+    if unknown_objects and hasattr(env.scene, "table_id"):
+        surface_xy = _precompute_surface_xy(
+            visibility_grid, env.scene.table_id, env.physics_client_id, excluded_xys
+        )
+
     particles = []
     for _ in range(num_particles):
         joint_positions = tuple(env.robot.get_joint_positions())
@@ -171,8 +185,7 @@ def create_initial_belief(
                 obj_id,
                 env.scene.table_id,
                 env.physics_client_id,
-                visibility_grid,
-                excluded_xys,
+                precomputed_surface_xy=surface_xy,
             )
 
         state = TabletopState(
@@ -424,6 +437,9 @@ def update_belief(
         if table_id is not None and unknown_objects:
             never_seen = unknown_objects - occluded_objects
             if never_seen:
+                surface_xy = _precompute_surface_xy(
+                    belief.visibility_grid, table_id, physics_client_id, excluded_xys
+                )
                 resampled = []
                 for particle in new_particles:
                     new_poses = dict(particle.object_poses)
@@ -433,8 +449,7 @@ def update_belief(
                                 obj_id,
                                 table_id,
                                 physics_client_id,
-                                belief.visibility_grid,
-                                excluded_xys,
+                                precomputed_surface_xy=surface_xy,
                             )
                     resampled.append(
                         TabletopState(

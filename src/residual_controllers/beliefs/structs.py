@@ -52,6 +52,12 @@ class CameraIntrinsics:
 class BeliefConfig:
     """Configuration for particle filter belief tracking."""
 
+    # Occupancy grid shape
+    grid_bounds: list[list[float]] = field(
+        default_factory=lambda: [[0.2, 0.8], [-0.4, 0.4], [0.0, 0.15]]
+    )
+    grid_resolution: float = 0.015
+
     # Occupancy grid thresholds
     free_max: float = 0.4
     occupied_min: float = 0.6
