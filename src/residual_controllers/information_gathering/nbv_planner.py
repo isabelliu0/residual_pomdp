@@ -35,7 +35,7 @@ class ViewpointCandidate:
 
 def compute_object_target_center(
     belief: Belief,
-    object_id: int,
+    object_label: str,
     z_range: tuple[float, float] = (0.0, 0.1),
 ) -> np.ndarray | None:
     """Compute target center for viewing a specific object.
@@ -43,16 +43,16 @@ def compute_object_target_center(
     For known objects: returns weighted mean position from particles.
     For occluded/unknown objects: returns centroid of uncertain region.
     """
-    confidence = belief.object_confidence.get(object_id, 0.0)
+    confidence = belief.object_confidence.get(object_label, 0.0)
     if confidence < 0.1:
         if belief.visibility_grid is not None:
             print("Planning NBV for centroid of uncertain region...")
             return compute_region_centroid(belief.visibility_grid, z_range=z_range)
         return None
 
-    if object_id in belief.known_objects:
-        print("Planning NBV for object {object_id}...")
-        return get_mean_object_position(belief, object_id)
+    if object_label in belief.known_objects:
+        print(f"Planning NBV for object {object_label}...")
+        return get_mean_object_position(belief, object_label)
 
     if belief.visibility_grid is not None:
         return compute_region_centroid(belief.visibility_grid, z_range=z_range)
@@ -76,6 +76,7 @@ def _count_uncertain_voxels_ray(
     count = 0
     step_size = resolution * 0.5
     num_steps = int(max_range / step_size)
+    entered_grid = False
 
     for i in range(num_steps):
         t = i * step_size
@@ -85,13 +86,18 @@ def _count_uncertain_voxels_ray(
         iy = int((point[1] - bounds[1, 0]) / resolution)
         iz = int((point[2] - bounds[2, 0]) / resolution)
 
-        if not (
+        in_grid = (
             0 <= ix < grid.shape[0]
             and 0 <= iy < grid.shape[1]
             and 0 <= iz < grid.shape[2]
-        ):
-            break
+        )
 
+        if not in_grid:
+            if entered_grid:
+                break
+            continue
+
+        entered_grid = True
         log_odds = grid[ix, iy, iz]
 
         if log_odds > occupied_min_logodds:
@@ -269,7 +275,7 @@ class NBVPlanner:
     def plan_for_object(
         self,
         belief: Belief,
-        object_id: int,
+        object_label: str,
         z_range: tuple[float, float] = (0.0, 0.1),
         seed: int | None = None,
     ) -> ViewpointCandidate | None:
@@ -281,7 +287,9 @@ class NBVPlanner:
         if belief.visibility_grid is None:
             return None
 
-        target_center = compute_object_target_center(belief, object_id, z_range=z_range)
+        target_center = compute_object_target_center(
+            belief, object_label, z_range=z_range
+        )
         if target_center is None:
             return None
 

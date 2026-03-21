@@ -8,20 +8,20 @@ import pybullet as p
 
 def detect_objects_from_segmentation(
     segmentation: np.ndarray,
-    object_ids: list[int],
+    label_to_id: dict[str, int],
     physics_client_id: int,
-) -> dict[int, tuple[tuple[float, ...], float]]:
+) -> dict[str, tuple[tuple[float, ...], float]]:
     """Detect objects visible in camera view using segmentation mask.
 
     Uses ground-truth poses from the simulator for detected objects.
     Segmentation determines visibility; position comes directly from
     pybullet.
 
-    Returns dict[object_id] -> ((x,y,z,qx,qy,qz,qw), confidence)
+    Returns dict[label] -> ((x,y,z,qx,qy,qz,qw), confidence)
     """
-    detections: dict[int, tuple[tuple[float, ...], float]] = {}
+    detections: dict[str, tuple[tuple[float, ...], float]] = {}
 
-    for obj_id in object_ids:
+    for label, obj_id in label_to_id.items():
         mask = segmentation == obj_id
         if not np.any(mask):
             continue
@@ -40,7 +40,7 @@ def detect_objects_from_segmentation(
             float(quat_obj[2]),
             float(quat_obj[3]),
         )
-        detections[obj_id] = (detected_pose, confidence)
+        detections[label] = (detected_pose, confidence)
 
     return detections
 

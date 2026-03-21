@@ -142,7 +142,7 @@ def test_nbv_planner_for_target_object():
     env = TabletopPickEnv(gui=True, num_objects=3, occlusion_prob=1.0)
     _, info = env.reset(seed=42)
 
-    target_object_id = info["target_object_id"]
+    target_object_label = info["target_object_label"]
 
     assert env.belief is not None
     assert env.scene is not None
@@ -153,7 +153,7 @@ def test_nbv_planner_for_target_object():
     print(f"\n{'='*60}")
     print("NBV Planning for Target Object")
     print(f"{'='*60}")
-    print(f"Target object ID: {target_object_id}")
+    print(f"Target object label: {target_object_label}")
     print(f"Known objects: {env.belief.known_objects}")
     print(f"Unknown objects: {env.belief.unknown_objects}")
     print(f"Occluded objects: {env.belief.occluded_objects}")
@@ -177,7 +177,7 @@ def test_nbv_planner_for_target_object():
     pose_debug_ids: set[int] = set()
     for step in range(max_steps):
         target_center = compute_object_target_center(
-            env.belief, target_object_id, z_range=(0.0, 0.1)
+            env.belief, target_object_label, z_range=(0.0, 0.1)
         )
 
         if target_center is not None:
@@ -194,7 +194,7 @@ def test_nbv_planner_for_target_object():
 
         best_viewpoint = planner.plan_for_object(
             belief=env.belief,
-            object_id=target_object_id,
+            object_label=target_object_label,
             z_range=(0.0, 0.1),
             seed=42 + step,
         )
@@ -261,7 +261,7 @@ def test_nbv_planner_for_target_object():
         print("\nAfter info-gathering step:")
         print(f"  Known objects: {env.belief.known_objects}")
         print(f"  Unknown objects: {env.belief.unknown_objects}")
-        print(f"  Target in known: {target_object_id in env.belief.known_objects}")
+        print(f"  Target in known: {target_object_label in env.belief.known_objects}")
 
         env.belief.visibility_grid.clear_visualization(
             grid_debug_ids, env.physics_client_id

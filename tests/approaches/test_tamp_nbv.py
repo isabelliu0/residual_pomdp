@@ -15,10 +15,30 @@ def test_approach_tabletop():
     system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
     obs, info = system.reset(seed=42)
 
+    os.makedirs("videos/tamp-nbv-approach", exist_ok=True)
+    writer = imageio.get_writer(
+        "videos/tamp-nbv-approach/tamp_nbv_approach.mp4",
+        fps=30,
+        codec="libx264",
+    )
+
+    def capture_frame():
+        frame = capture_image(
+            system.env.physics_client_id,
+            camera_distance=1.5,
+            camera_yaw=50,
+            camera_pitch=-35,
+            camera_target=(0.5, 0.0, 0.0),
+            image_width=640,
+            image_height=480,
+        )
+        writer.append_data(frame)
+
     config = TampNbvConfig(nbv_max_viewpoints=5, nbv_max_steps_per_viewpoint=20)
     approach = TampNbvApproach(system, seed=42, config=config)
 
     step_result = approach.reset(obs, info)
+    capture_frame()
     obs, reward, terminated, truncated, info = system.step(step_result.action)
 
     for _ in range(200):
@@ -29,6 +49,9 @@ def test_approach_tabletop():
             break
         step_result = approach.step(obs, reward, terminated, truncated, info)
         obs, reward, terminated, truncated, info = system.step(step_result.action)
+        capture_frame()
+
+    writer.close()
 
     metrics = approach.get_metrics()
     print("\n=== TampNbv metrics ===")

@@ -6,8 +6,9 @@ from typing import Any
 
 import numpy as np
 import pybullet as p
+from pybullet_helpers.geometry import Pose, get_pose, set_pose
 
-from residual_controllers.beliefs import get_mean_state
+from residual_controllers.beliefs import get_best_particle_state
 from residual_controllers.beliefs.structs import Belief
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
@@ -49,7 +50,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         self.num_objects = num_objects
         self.occlusion_prob = occlusion_prob
         self._nbv_planner: NBVPlanner | None = None
-        self._target_object_id: int | None = None
+        self._target_object_label: str | None = None
         self._plan_env: TabletopPickEnv | None = None
         self.abstractor: TabletopAbstractor | None = None
         super().__init__(seed=seed)
@@ -63,8 +64,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
 
     def _on_reset(self, _obs: dict, info: dict[str, Any]) -> None:
         assert self.env.robot is not None
-        self._target_object_id = info.get("target_object_id")
-        print(f"[ENV] Reset with target object ID: {self._target_object_id}")
+        self._target_object_label = info.get("target_object_label")
         self._nbv_planner = NBVPlanner(
             robot=self.env.robot,
             camera_intrinsics=self.env.camera_intrinsics,
@@ -92,13 +92,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
     def _run_plan(self, goal_atoms_override: Any, seed: int | None):
         assert self._plan_env is not None
 
-        self._plan_env.set_state(self.env.get_state())
-        if self.env.belief is not None:
-            obs = self._plan_env.get_obs_from_mean(
-                get_mean_state(self.env.belief), self.env.scene.object_ids
-            )
-        else:
-            obs = self._plan_env.get_observation()
+        obs = self._build_plan_obs_from_belief(self.env.belief)
 
         types = TabletopTypes()
         predicates = TabletopPredicates(types)
@@ -139,12 +133,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
     def get_symbolic_plan(self, planner: str = "pyperplan") -> list[str] | None:
         assert self._plan_env is not None
 
-        if self.env.belief is not None:
-            held_obs = self._plan_env.get_obs_from_mean(
-                get_mean_state(self.env.belief), self.env.scene.object_ids
-            )
-        else:
-            held_obs = self._plan_env.get_observation()
+        held_obs = self._build_plan_obs_from_belief(self.env.belief)
 
         types = TabletopTypes()
         predicates = TabletopPredicates(types)
@@ -155,7 +144,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
 
         if self.env.belief is not None:
             init_atoms = abstractor.get_atoms_from_belief_particles(
-                self.env.belief.particles, self.env.scene.object_ids, held_obs
+                self.env.belief.particles, held_obs
             )
         else:
             init_atoms = mean_init_atoms
@@ -170,6 +159,51 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
             goal_atoms=goal_atoms,
             planner=planner,
         )
+
+    def _build_plan_obs_from_belief(self, belief: Belief | None) -> dict:
+        """Set up plan_env for planning without leaking GT object poses.
+
+        Robot joints and target area come from the actual env (known
+        exactly). Object poses come from the best particle (highest-
+        weight); if no belief, syncs object poses from the actual env
+        directly.
+        """
+        assert self._plan_env is not None
+        assert self._plan_env.scene is not None
+        assert self.env.scene is not None
+
+        self._plan_env.robot.set_joints(list(self.env.robot.get_joint_positions()))
+
+        target_area_pose = get_pose(
+            self.env.scene.target_area_id, self.env.physics_client_id
+        )
+        set_pose(
+            self._plan_env.scene.target_area_id,
+            target_area_pose,
+            self._plan_env.physics_client_id,
+        )
+
+        if belief is not None:
+            best = get_best_particle_state(belief)
+            for label, plan_obj_id in self._plan_env.scene.label_to_id.items():
+                pose = best.object_poses.get(label)
+                if pose is not None:
+                    set_pose(
+                        plan_obj_id,
+                        Pose(position=pose[:3], orientation=pose[3:]),
+                        self._plan_env.physics_client_id,
+                    )
+        else:
+            for label in self._plan_env.scene.label_to_id:
+                main_id = self.env.scene.label_to_id[label]
+                plan_id = self._plan_env.scene.label_to_id[label]
+                set_pose(
+                    plan_id,
+                    get_pose(main_id, self.env.physics_client_id),
+                    self._plan_env.physics_client_id,
+                )
+
+        return self._plan_env.get_observation()
 
     def get_noop_action(self) -> np.ndarray:
         return np.zeros(8, dtype=np.float32)
@@ -192,55 +226,34 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         return compute_subsequence_effects(subsequence, operators, objects_by_name)
 
     def _name_to_main_id_map(self) -> dict[str, int]:
-        """Map symbolic object names to main-env body IDs via positional cross-
-        client mapping."""
+        """Map symbolic object names (lowercase) to main-env body IDs."""
         if self.abstractor is None or self._plan_env is None:
             return {}
-        assert self.env.scene is not None and self._plan_env.scene is not None
-        plan_to_main = {
-            plan_id: self.env.scene.object_ids[i]
-            for i, plan_id in enumerate(self._plan_env.scene.object_ids)
-            if i < len(self.env.scene.object_ids)
-        }
+        assert self.env.scene is not None
         return {
-            obj.name.lower(): plan_to_main[pid]
-            for obj, pid in self.abstractor._pybullet_ids.items()  # pylint: disable=protected-access
-            if pid in plan_to_main
+            obj.name.lower(): self.env.scene.label_to_id[obj.name.upper()]
+            for obj in self.abstractor._pybullet_ids  # pylint: disable=protected-access
+            if obj.name.upper() in self.env.scene.label_to_id
         }
 
     def is_object_set_unknown(self, obj_names: set[str]) -> bool:
         belief = self.get_belief()
         if belief is None:
             return False
-        id_map = self._name_to_main_id_map()
-        return any(
-            id_map.get(name) in belief.unknown_objects
-            for name in obj_names
-            if id_map.get(name) is not None
-        )
+        label_map = self.get_object_labels_for_names(obj_names)
+        return any(label in belief.unknown_objects for label in label_map.values())
 
-    def get_object_ids_for_names(self, names: set[str]) -> dict[str, int]:
-        """Get main-env body IDs for a set of symbolic object names."""
-        id_map = self._name_to_main_id_map()
-        return {name: id_map[name] for name in names if name in id_map}
-
-    def check_atoms_satisfied(self, atoms: set) -> bool:
-        """Check if symbolic atoms are satisfied in the current environment
-        state."""
-        if not atoms:
-            return True
-        if self.abstractor is None or self._plan_env is None:
-            return False
-        assert self.env.scene is not None
-        self._plan_env.set_state(self.env.get_state())
-        if self.env.belief is not None:
-            obs = self._plan_env.get_obs_from_mean(
-                get_mean_state(self.env.belief), self.env.scene.object_ids
-            )
-        else:
-            obs = self._plan_env.get_observation()
-        abstract_state = self.abstractor.step(obs)
-        return atoms.issubset(abstract_state.atoms)
+    def get_object_labels_for_names(self, names: set[str]) -> dict[str, str]:
+        """Map symbolic names to object labels (e.g. 'a' -> 'A')."""
+        if self.abstractor is None:
+            return {}
+        scene_labels = self.env.scene.label_to_id if self.env.scene else {}
+        pddl_to_label = {
+            obj.name.lower(): obj.name.upper()
+            for obj in self.abstractor._pybullet_ids  # pylint: disable=protected-access
+            if obj.name.upper() in scene_labels
+        }
+        return {name: pddl_to_label[name] for name in names if name in pddl_to_label}
 
     def get_ground_truth_object_poses(self, obj_ids: list[int]) -> dict[int, tuple]:
         """Get ground-truth object poses directly from PyBullet (for training
@@ -274,13 +287,13 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         belief = self.get_belief()
         if belief is None:
             return False
-        target_id = info.get("target_object_id", self._target_object_id)
-        if target_id is None:
+        target_label = info.get("target_object_label", self._target_object_label)
+        if target_label is None:
             return False
-        return target_id in belief.unknown_objects
+        return target_label in belief.unknown_objects
 
     def select_viewpoint(
-        self, target_id: int, seed: int | None = None
+        self, target_label: str, seed: int | None = None
     ) -> ViewpointCandidate | None:
         """Select next-best-view for observing target object."""
         if self._nbv_planner is None:
@@ -289,7 +302,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         if belief is None:
             return None
         return self._nbv_planner.plan_for_object(
-            belief=belief, object_id=target_id, z_range=(0.0, 0.1), seed=seed
+            belief=belief, object_label=target_label, z_range=(0.0, 0.1), seed=seed
         )
 
     def plan_to_viewpoint(
