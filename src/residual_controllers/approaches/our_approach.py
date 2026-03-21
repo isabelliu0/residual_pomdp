@@ -44,7 +44,7 @@ class TampNbvMetrics:
 class NBVState:
     """State for NBV execution."""
 
-    target_id: int
+    target_label: str
     current_viewpoint: Any | None = None
     trajectory: list[np.ndarray] = field(default_factory=list)
     trajectory_idx: int = 0
@@ -76,7 +76,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._mode = ExecutionMode.PLANNING
         self._plan_actions: list[Any] = []
         self._plan_idx = 0
-        self._target_id: int | None = None
+        self._target_label: str | None = None
         self._nbv_state: NBVState | None = None
         self._last_info: dict[str, Any] = {}
         self._symbolic_plan: list[str] | None = None
@@ -93,8 +93,8 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._oig_subsequences = []
         self._current_subseq_idx = 0
 
-        self._target_id = info.get("target_object_id")
-        if self._target_id is None:
+        self._target_label = info.get("target_object_label")
+        if self._target_label is None:
             self._mode = ExecutionMode.DONE
             return ApproachStepResult(
                 action=self.system.get_noop_action(),
@@ -149,10 +149,10 @@ class TampNbvApproach(BaseApproach[Any, Any]):
 
     def _step_nbv(self, _info: dict[str, Any]) -> ApproachStepResult[Any]:
         if self._nbv_state is None or self._mode != ExecutionMode.NBV:
-            self._nbv_state = NBVState(target_id=self._target_id or 0)
+            self._nbv_state = NBVState(target_label=self._target_label or "")
             self._mode = ExecutionMode.NBV
             self.metrics.nbv_calls += 1
-            print(f"[NBV] Entering NBV mode for target {self._target_id}")
+            print(f"[NBV] Entering NBV mode for target {self._target_label}")
 
         self.metrics.nbv_steps += 1
 
@@ -226,9 +226,9 @@ class TampNbvApproach(BaseApproach[Any, Any]):
     def _select_new_viewpoint(self) -> Any | None:
         if not hasattr(self.system, "select_viewpoint"):
             return None
-        if self._target_id is None:
+        if self._target_label is None:
             return None
-        return self.system.select_viewpoint(self._target_id, seed=self._seed)
+        return self.system.select_viewpoint(self._target_label, seed=self._seed)
 
     def _exit_nbv_and_execute(self) -> ApproachStepResult[Any]:
         self._nbv_state = None

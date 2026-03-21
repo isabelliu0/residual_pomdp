@@ -18,6 +18,7 @@ dependencies = [
     "tensorboard>=2.18.0",
     "pybullet>=3.2.5",
     "numba",
+    "scikit-learn",
     "pybullet_helpers@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=pybullet-helpers",
     "tomsgeoms2d@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=toms-geoms-2d",
     "relational_structs@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=relational-structs",
@@ -75,5 +76,6 @@ module = [
     "relational_structs.*",
     "bilevel_planning.*",
     "prpl_utils.*",
+    "sklearn.*",
 ]
 ignore_missing_imports = true

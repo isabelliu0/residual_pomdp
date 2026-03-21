@@ -17,7 +17,7 @@ def test_basic_env():
     print(f"Action space: {env.action_space}")
     print(f"Joint positions shape: {obs['joint_positions'].shape}")
     print(f"Camera pose shape: {obs['camera_pose'].shape}")
-    print(f"Target object ID: {info['target_object_id']}")
+    print(f"Target object label: {info['target_object_label']}")
 
     print("\nCapturing camera image...")
     camera_image = env.get_camera_image()

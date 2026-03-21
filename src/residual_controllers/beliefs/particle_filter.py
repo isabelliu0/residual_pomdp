@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 import numpy as np
 import pybullet as p
@@ -23,7 +24,7 @@ from residual_controllers.beliefs.structs import (
 class ObjectLikelihoodStats:
     """Per-object likelihood statistics."""
 
-    obj_id: int
+    label: str
     mean_distance: float
     min_distance: float
     max_distance: float
@@ -38,7 +39,7 @@ class ObjectLikelihoodStats:
 class BeliefUpdateDiagnostics:
     """Diagnostics from a belief update step."""
 
-    object_stats: dict[int, ObjectLikelihoodStats] = field(default_factory=dict)
+    object_stats: dict[str, ObjectLikelihoodStats] = field(default_factory=dict)
     n_eff_before: float = 0.0
     n_eff_after: float = 0.0
     resampled: bool = False
@@ -55,30 +56,42 @@ def _precompute_surface_xy(
     visibility_grid: LogOddsOccupancyGrid,
     table_id: int,
     physics_client_id: int,
-    excluded_xys: list[tuple[float, float, float]] | None = None,
+    excluded_aabbs: list[tuple[float, float, float, float]] | None = None,
 ) -> list[tuple[float, float]]:
     """Precompute unseen surface (x, y) candidates from the occupancy grid.
 
-    Call this once before a particle resampling loop and pass the result to
-    _sample_on_table_pose to avoid recomputing the sigmoid over all voxels
-    for every particle.
+    Call this once before a particle resampling loop and pass the result
+    to _sample_on_table_pose to avoid recomputing the sigmoid over all
+    voxels for every particle.
     """
     table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
     table_top_z = float(table_aabb[1][2])
     unseen = visibility_grid.get_unobserved_voxels()
     surface_xy = []
     for vx, vy, vz in unseen:
-        if not (abs(vz - table_top_z) < 0.05):
+        if not abs(vz - table_top_z) < 0.05:
             continue
-        if not (table_aabb[0][0] <= vx <= table_aabb[1][0]):
+        if not table_aabb[0][0] <= vx <= table_aabb[1][0]:
             continue
-        if not (table_aabb[0][1] <= vy <= table_aabb[1][1]):
+        if not table_aabb[0][1] <= vy <= table_aabb[1][1]:
             continue
-        if excluded_xys and any(
-            (vx - cx) ** 2 + (vy - cy) ** 2 < r**2 for cx, cy, r in excluded_xys
+        if excluded_aabbs and any(
+            xmin <= vx <= xmax and ymin <= vy <= ymax
+            for xmin, ymin, xmax, ymax in excluded_aabbs
         ):
             continue
         surface_xy.append((vx, vy))
+    # print(f"[surface_xy] {len(surface_xy)} unseen surface voxels (of {len(unseen)} total unseen)")    # pylint: disable=line-too-long
+    # if surface_xy:
+    #     xs = np.array([v[0] for v in surface_xy])
+    #     ys = np.array([v[1] for v in surface_xy])
+    #     x_bins = np.linspace(xs.min(), xs.max(), 6)
+    #     y_bins = np.linspace(ys.min(), ys.max(), 6)
+    #     hist, _, _ = np.histogram2d(xs, ys, bins=[x_bins, y_bins])
+    #     print(f"[surface_xy] 2D count distribution (x=rows, y=cols):")
+    #     print(f"[surface_xy]   x=[{xs.min():.3f},{xs.max():.3f}]  y=[{ys.min():.3f},{ys.max():.3f}]") # pylint: disable=line-too-long
+    #     for row in hist.astype(int):
+    #         print(f"[surface_xy]   {row.tolist()}")
     return surface_xy
 
 
@@ -90,8 +103,8 @@ def _sample_on_table_pose(
 ) -> SE3Pose:
     """Sample a random pose for obj placed flat on the table surface.
 
-    Pass precomputed_surface_xy (from _precompute_surface_xy) to bias sampling
-    toward unseen voxels. Falls back to uniform sampling over the table.
+    Pass precomputed_surface_xy to bias sampling toward unseen voxels.
+    Falls back to uniform sampling over the table.
     """
     table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
     table_top_z = float(table_aabb[1][2])
@@ -117,18 +130,19 @@ def create_initial_belief(
     """Initialize belief from first camera observation."""
     config = config or BeliefConfig()
     camera_pose = env.get_camera_pose_se3()
+    label_to_id = env.scene.label_to_id
     detections = detect_objects_from_segmentation(
         camera_image.segmentation,
-        env.scene.object_ids,
+        label_to_id,
         env.physics_client_id,
     )
 
-    known_objects = set(detections.keys())
-    all_objects = set(env.scene.object_ids)
-    unknown_objects = all_objects - known_objects
-    object_confidence = {obj_id: 0.0 for obj_id in all_objects}
-    for obj_id in known_objects:
-        object_confidence[obj_id] = 1.0
+    known_objects: set[str] = set(detections.keys())
+    all_objects: set[str] = set(label_to_id.keys())
+    unknown_objects: set[str] = all_objects - known_objects
+    object_confidence: dict[str, float] = {label: 0.0 for label in all_objects}
+    for label in known_objects:
+        object_confidence[label] = 1.0
 
     visibility_grid = LogOddsOccupancyGrid(
         bounds=config.grid_bounds,
@@ -139,7 +153,7 @@ def create_initial_belief(
         camera_pose,
         camera_image.depth,
         camera_image.segmentation,
-        env.scene.object_ids,
+        list(label_to_id.values()),
         env.camera_intrinsics,
         stride=config.grid_stride,
         free_space_margin=config.free_space_margin,
@@ -151,49 +165,60 @@ def create_initial_belief(
         depth_noise_scale=config.depth_noise_scale,
     )
 
-    excluded_xys: list[tuple[float, float, float]] = []
+    excluded_aabbs: list[tuple[float, float, float, float]] = []
     if (
         hasattr(env, "scene")
         and env.scene is not None
         and hasattr(env.scene, "target_area_id")
     ):
-        area_pos, _ = p.getBasePositionAndOrientation(
+        aabb = p.getAABB(
             env.scene.target_area_id, physicsClientId=env.physics_client_id
         )
-        excluded_xys.append((float(area_pos[0]), float(area_pos[1]), 0.1))
+        excluded_aabbs.append(
+            (float(aabb[0][0]), float(aabb[0][1]), float(aabb[1][0]), float(aabb[1][1]))
+        )
+
+    for label in known_objects:
+        obj_id = label_to_id[label]
+        aabb = p.getAABB(obj_id, physicsClientId=env.physics_client_id)
+        excluded_aabbs.append(
+            (float(aabb[0][0]), float(aabb[0][1]), float(aabb[1][0]), float(aabb[1][1]))
+        )
 
     surface_xy: list[tuple[float, float]] | None = None
     if unknown_objects and hasattr(env.scene, "table_id"):
         surface_xy = _precompute_surface_xy(
-            visibility_grid, env.scene.table_id, env.physics_client_id, excluded_xys
+            visibility_grid, env.scene.table_id, env.physics_client_id, excluded_aabbs
         )
 
     particles = []
-    for _ in range(num_particles):
-        joint_positions = tuple(env.robot.get_joint_positions())
-        gripper_open = 0.04
+    for i in range(num_particles):
+        object_poses: dict[str, SE3Pose] = {}
 
-        object_poses: dict[int, SE3Pose] = {}
+        for label in known_objects:
+            detected_pose, _ = detections[label]
+            object_poses[label] = (
+                cast(SE3Pose, detected_pose)
+                if i == 0
+                else add_pose_noise(detected_pose, pos_std=0.01, rot_std=0.0)
+            )
 
-        for obj_id in known_objects:
-            detected_pose, _ = detections[obj_id]
-            noisy_pose = add_pose_noise(detected_pose, pos_std=0.01, rot_std=0.09)
-            object_poses[obj_id] = noisy_pose
-
-        for obj_id in unknown_objects:
-            object_poses[obj_id] = _sample_on_table_pose(
+        for label in unknown_objects:
+            obj_id = label_to_id[label]
+            object_poses[label] = _sample_on_table_pose(
                 obj_id,
                 env.scene.table_id,
                 env.physics_client_id,
                 precomputed_surface_xy=surface_xy,
             )
 
-        state = TabletopState(
-            joint_positions=joint_positions,
-            gripper_open=gripper_open,
-            object_poses=object_poses,
+        particles.append(
+            TabletopState(
+                joint_positions=tuple(env.robot.get_joint_positions()),
+                gripper_open=0.04,
+                object_poses=object_poses,
+            )
         )
-        particles.append(state)
 
     weights = np.ones(num_particles, dtype=np.float32) / num_particles
 
@@ -204,7 +229,7 @@ def create_initial_belief(
         occluded_objects=set(),
         unknown_objects=unknown_objects,
         object_confidence=object_confidence,
-        held_object_id=None,
+        held_object_label=None,
         visibility_grid=visibility_grid,
     )
 
@@ -248,7 +273,7 @@ def predict_belief(
         occluded_objects=belief.occluded_objects.copy(),
         unknown_objects=belief.unknown_objects.copy(),
         object_confidence=dict(belief.object_confidence),
-        held_object_id=belief.held_object_id,
+        held_object_label=belief.held_object_label,
         visibility_grid=belief.visibility_grid,
     )
 
@@ -258,56 +283,52 @@ def update_belief(
     camera_image,
     camera_pose: tuple[tuple[float, ...], tuple[float, ...]],
     camera_intrinsics: CameraIntrinsics,
-    object_ids: list[int],
+    label_to_id: dict[str, int],
     physics_client_id: int,
     config: BeliefConfig | None = None,
     table_id: int | None = None,
-    excluded_xys: list[tuple[float, float, float]] | None = None,
+    excluded_aabbs: list[tuple[float, float, float, float]] | None = None,
 ) -> Belief:
     """Update belief from new camera observation."""
     detections = detect_objects_from_segmentation(
         camera_image.segmentation,
-        object_ids,
+        label_to_id,
         physics_client_id,
     )
 
     config = config or BeliefConfig()
     detected_objects = set(detections.keys())
-    occluded_objects: set[int] = set()
-    visibility_status: dict[int, str] = {}
+    occluded_objects: set[str] = set()
+    visibility_status: dict[str, str] = {}
 
     previously_known = belief.known_objects | belief.occluded_objects
 
-    for obj_id in object_ids:
-        if obj_id in detected_objects:
-            visibility_status[obj_id] = "detected"
+    for label in label_to_id:
+        if label in detected_objects:
+            visibility_status[label] = "detected"
             continue
 
-        last_known_pose = _get_last_known_pose(belief, obj_id)
-
-        if last_known_pose is None:
-            visibility_status[obj_id] = "never_seen"
-        elif belief.visibility_grid is not None:
+        if belief.visibility_grid is not None:
             visible_fraction = _fraction_visible_particles(
-                belief, obj_id, belief.visibility_grid
+                belief, label, belief.visibility_grid
             )
             if visible_fraction >= config.visible_fraction_threshold:
-                visibility_status[obj_id] = "visible_missing"
-            elif obj_id in previously_known:
-                visibility_status[obj_id] = "occluded"
-                occluded_objects.add(obj_id)
+                visibility_status[label] = "visible_missing"
+            elif label in previously_known:
+                visibility_status[label] = "occluded"
+                occluded_objects.add(label)
             else:
-                visibility_status[obj_id] = "never_seen"
-        elif obj_id in previously_known:
-            visibility_status[obj_id] = "occluded"
-            occluded_objects.add(obj_id)
+                visibility_status[label] = "never_seen"
+        elif label in previously_known:
+            visibility_status[label] = "occluded"
+            occluded_objects.add(label)
         else:
-            visibility_status[obj_id] = "never_seen"
+            visibility_status[label] = "never_seen"
 
     object_confidence = dict(belief.object_confidence)
-    for obj_id in object_ids:
-        conf = object_confidence.get(obj_id, 0.0)
-        status = visibility_status.get(obj_id, "never_seen")
+    for label in label_to_id:
+        conf = object_confidence.get(label, 0.0)
+        status = visibility_status.get(label, "never_seen")
         if status in ["detected", "held"]:
             conf = 1.0
         elif status == "occluded":
@@ -316,19 +337,19 @@ def update_belief(
             conf *= config.visible_missing_decay
         else:
             conf *= config.never_seen_decay
-        object_confidence[obj_id] = float(conf)
+        object_confidence[label] = float(conf)
 
     known_objects = {
-        obj_id
-        for obj_id, conf in object_confidence.items()
+        label
+        for label, conf in object_confidence.items()
         if conf >= config.confidence_known_threshold
     }
-    unknown_objects = set(object_ids) - known_objects
+    unknown_objects = set(label_to_id.keys()) - known_objects
 
     likelihoods = []
     updated_particles = []
-    mean_distance_sums: dict[int, float] = {}
-    mean_distance_weights: dict[int, float] = {}
+    mean_distance_sums: dict[str, float] = {}
+    mean_distance_weights: dict[str, float] = {}
     pos_std = config.pose_injection_pos_std
     rot_std = config.pose_injection_rot_std
     reset_distance = config.pose_injection_reset_distance
@@ -337,31 +358,32 @@ def update_belief(
         likelihood = 1.0
         new_object_poses = dict(particle.object_poses)
 
-        for obj_id, (detected_pose, _) in detections.items():
-            if obj_id in belief.unknown_objects:
-                new_object_poses[obj_id] = add_pose_noise(
-                    detected_pose, pos_std=pos_std, rot_std=rot_std
+        for label, (detected_pose, _) in detections.items():
+            if label in belief.unknown_objects:
+                new_object_poses[label] = (
+                    cast(SE3Pose, detected_pose)
+                    if particle_index == 0
+                    else add_pose_noise(detected_pose, pos_std=pos_std, rot_std=rot_std)
                 )
             else:
-                particle_pose = new_object_poses[obj_id]
+                particle_pose = new_object_poses[label]
                 dist = pose_distance(particle_pose, detected_pose)
                 likelihood *= np.exp(
                     -0.5 * (dist / config.likelihood_distance_scale) ** 2
                 )
                 weight = float(belief.weights[particle_index])
-                mean_distance_sums[obj_id] = mean_distance_sums.get(obj_id, 0.0) + (
+                mean_distance_sums[label] = mean_distance_sums.get(label, 0.0) + (
                     weight * dist
                 )
-                mean_distance_weights[obj_id] = mean_distance_weights.get(
-                    obj_id, 0.0
-                ) + (weight)
+                mean_distance_weights[label] = mean_distance_weights.get(label, 0.0) + (
+                    weight
+                )
                 alpha = float(np.clip(dist / reset_distance, min_alpha, 1.0))
-                blended_pose = blend_poses(particle_pose, detected_pose, alpha)
-                new_object_poses[obj_id] = add_pose_noise(
-                    blended_pose, pos_std=pos_std, rot_std=rot_std
+                new_object_poses[label] = blend_poses(
+                    particle_pose, detected_pose, alpha
                 )
 
-        for obj_id in occluded_objects:
+        for label in occluded_objects:
             likelihood *= config.occluded_likelihood
 
         updated_particles.append(
@@ -401,9 +423,9 @@ def update_belief(
 
     if belief.visibility_grid is not None:
         mean_distances = {
-            obj_id: dist_sum / mean_distance_weights[obj_id]
-            for obj_id, dist_sum in mean_distance_sums.items()
-            if mean_distance_weights.get(obj_id, 0.0) > 0.0
+            label: dist_sum / mean_distance_weights[label]
+            for label, dist_sum in mean_distance_sums.items()
+            if mean_distance_weights.get(label, 0.0) > 0.0
         }
         observation_confidence = compute_observation_confidence(
             belief,
@@ -421,7 +443,7 @@ def update_belief(
             camera_pose,
             camera_image.depth,
             camera_image.segmentation,
-            object_ids,
+            list(label_to_id.values()),
             camera_intrinsics,
             ego_confidence,
             stride=config.grid_stride,
@@ -437,16 +459,32 @@ def update_belief(
         if table_id is not None and unknown_objects:
             never_seen = unknown_objects - occluded_objects
             if never_seen:
+                detected_excluded = list(excluded_aabbs or [])
+                for label in detections:
+                    aabb = p.getAABB(
+                        label_to_id[label], physicsClientId=physics_client_id
+                    )
+                    detected_excluded.append(
+                        (
+                            float(aabb[0][0]),
+                            float(aabb[0][1]),
+                            float(aabb[1][0]),
+                            float(aabb[1][1]),
+                        )
+                    )
                 surface_xy = _precompute_surface_xy(
-                    belief.visibility_grid, table_id, physics_client_id, excluded_xys
+                    belief.visibility_grid,
+                    table_id,
+                    physics_client_id,
+                    detected_excluded,
                 )
                 resampled = []
                 for particle in new_particles:
                     new_poses = dict(particle.object_poses)
-                    for obj_id in never_seen:
-                        if obj_id not in detections:
-                            new_poses[obj_id] = _sample_on_table_pose(
-                                obj_id,
+                    for label in never_seen:
+                        if label not in detections:
+                            new_poses[label] = _sample_on_table_pose(
+                                label_to_id[label],
                                 table_id,
                                 physics_client_id,
                                 precomputed_surface_xy=surface_xy,
@@ -467,7 +505,7 @@ def update_belief(
         occluded_objects=occluded_objects,
         unknown_objects=unknown_objects,
         object_confidence=object_confidence,
-        held_object_id=belief.held_object_id,
+        held_object_label=belief.held_object_label,
         visibility_grid=belief.visibility_grid,
     )
 
@@ -475,14 +513,14 @@ def update_belief(
 def compute_belief_diagnostics(
     belief: Belief,
     camera_image,
-    object_ids: list[int],
+    label_to_id: dict[str, int],
     physics_client_id: int,
     config: BeliefConfig | None = None,
 ) -> BeliefUpdateDiagnostics:
     """Compute diagnostics for belief update without modifying belief."""
     detections = detect_objects_from_segmentation(
         camera_image.segmentation,
-        object_ids,
+        label_to_id,
         physics_client_id,
     )
 
@@ -499,12 +537,12 @@ def compute_belief_diagnostics(
     diagnostics.weight_max_before = float(np.max(weights))
 
     # Per-object statistics
-    for obj_id, (detected_pose, _) in detections.items():
+    for label, (detected_pose, _) in detections.items():
         distances = []
         likelihoods = []
 
         for particle in belief.particles:
-            particle_pose = particle.object_poses[obj_id]
+            particle_pose = particle.object_poses[label]
             dist = pose_distance(particle_pose, detected_pose)
             distances.append(dist)
             likelihoods.append(
@@ -512,7 +550,7 @@ def compute_belief_diagnostics(
             )
 
         stats = ObjectLikelihoodStats(
-            obj_id=obj_id,
+            label=label,
             mean_distance=float(np.mean(distances)),
             min_distance=float(np.min(distances)),
             max_distance=float(np.max(distances)),
@@ -522,16 +560,16 @@ def compute_belief_diagnostics(
             max_likelihood=float(np.max(likelihoods)),
             total_particles=len(belief.particles),
         )
-        diagnostics.object_stats[obj_id] = stats
+        diagnostics.object_stats[label] = stats
 
     # Compute what n_eff would be after update
     likelihoods_all = []
     for particle in belief.particles:
         likelihood = 1.0
-        for obj_id, (detected_pose, _) in detections.items():
-            if obj_id in belief.unknown_objects:
+        for label, (detected_pose, _) in detections.items():
+            if label in belief.unknown_objects:
                 continue
-            particle_pose = particle.object_poses[obj_id]
+            particle_pose = particle.object_poses[label]
             dist = pose_distance(particle_pose, detected_pose)
             likelihood *= float(
                 np.exp(-0.5 * (dist / config.likelihood_distance_scale) ** 2)
@@ -552,8 +590,7 @@ def compute_belief_diagnostics(
         diagnostics.resampled = diagnostics.n_eff_after < len(belief.particles) / 2
 
     mean_distances = {
-        obj_id: stats.mean_distance
-        for obj_id, stats in diagnostics.object_stats.items()
+        label: stats.mean_distance for label, stats in diagnostics.object_stats.items()
     }
     observation_confidence = compute_observation_confidence(
         belief,
@@ -571,12 +608,12 @@ def compute_belief_diagnostics(
     return diagnostics
 
 
-def _get_last_known_pose(belief: Belief, obj_id: int) -> tuple[float, ...] | None:
+def _get_last_known_pose(belief: Belief, label: str) -> tuple[float, ...] | None:
     """Get last known pose for an object from particles (weighted mean)."""
     poses = [
-        particle.object_poses[obj_id]
+        particle.object_poses[label]
         for particle in belief.particles
-        if obj_id in particle.object_poses
+        if label in particle.object_poses
     ]
     if not poses:
         return None
@@ -591,13 +628,13 @@ def _is_position_visible(
 
 
 def _fraction_visible_particles(
-    belief: Belief, obj_id: int, visibility_grid: LogOddsOccupancyGrid
+    belief: Belief, label: str, visibility_grid: LogOddsOccupancyGrid
 ) -> float:
     """Fraction of particles whose object pose lies in visible grid space."""
     poses = [
-        particle.object_poses[obj_id]
+        particle.object_poses[label]
         for particle in belief.particles
-        if obj_id in particle.object_poses
+        if label in particle.object_poses
     ]
     visible = sum(
         1 for pose in poses if _is_position_visible(visibility_grid, pose[:3])
@@ -617,14 +654,14 @@ def get_mean_state(belief: Belief) -> TabletopState:
         [particle.gripper_open for particle in belief.particles], weights=belief.weights
     )
 
-    all_obj_ids: set[int] = set()
+    all_labels: set[str] = set()
     for particle in belief.particles:
-        all_obj_ids.update(particle.object_poses.keys())
+        all_labels.update(particle.object_poses.keys())
 
-    mean_object_poses: dict[int, SE3Pose] = {}
-    for obj_id in all_obj_ids:
-        poses = [particle.object_poses[obj_id] for particle in belief.particles]
-        mean_object_poses[obj_id] = average_poses(poses, belief.weights)
+    mean_object_poses: dict[str, SE3Pose] = {}
+    for label in all_labels:
+        poses = [particle.object_poses[label] for particle in belief.particles]
+        mean_object_poses[label] = average_poses(poses, belief.weights)
 
     return TabletopState(
         joint_positions=tuple(mean_joints),
@@ -633,12 +670,12 @@ def get_mean_state(belief: Belief) -> TabletopState:
     )
 
 
-def get_mean_object_position(belief: Belief, object_id: int) -> np.ndarray | None:
+def get_mean_object_position(belief: Belief, label: str) -> np.ndarray | None:
     """Get weighted average position (xyz) for a specific object."""
     poses = [
-        particle.object_poses[object_id]
+        particle.object_poses[label]
         for particle in belief.particles
-        if object_id in particle.object_poses
+        if label in particle.object_poses
     ]
     positions_arr = np.array([[p[0], p[1], p[2]] for p in poses], dtype=np.float32)
     return np.average(positions_arr, axis=0, weights=belief.weights)
@@ -718,8 +755,8 @@ def blend_poses(
 
 def compute_observation_confidence(
     belief: Belief,
-    detections: dict[int, tuple[tuple[float, ...], float]],
-    mean_distances: dict[int, float] | None = None,
+    detections: dict[str, tuple[tuple[float, ...], float]],
+    mean_distances: dict[str, float] | None = None,
     distance_scale: float = 0.15,
 ) -> float:
     """Score observation consistency based on particle pose agreement."""
@@ -736,11 +773,11 @@ def compute_observation_confidence(
         return float(np.mean(scores))
 
     scores = []
-    for obj_id, (detected_pose, _) in detections.items():
+    for label, (detected_pose, _) in detections.items():
         distances = [
-            pose_distance(particle.object_poses[obj_id], detected_pose)
+            pose_distance(particle.object_poses[label], detected_pose)
             for particle in belief.particles
-            if obj_id in particle.object_poses
+            if label in particle.object_poses
         ]
         weights_arr = belief.weights.astype(np.float64)
         weights_arr /= weights_arr.sum()
@@ -751,6 +788,11 @@ def compute_observation_confidence(
         return 0.0
 
     return float(np.mean(scores))
+
+
+def get_best_particle_state(belief: Belief) -> TabletopState:
+    """Return the particle with the highest weight."""
+    return belief.particles[int(np.argmax(belief.weights))]
 
 
 def compute_ego_pose_confidence(

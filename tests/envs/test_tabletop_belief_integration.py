@@ -271,7 +271,7 @@ def test_particle_filter_diagnostics():
         diagnostics = compute_belief_diagnostics(
             env.belief,
             camera_image,
-            env.scene.object_ids,
+            env.scene.label_to_id,
             env.physics_client_id,
         )
 
@@ -445,8 +445,9 @@ def test_unknown_target_particle_distribution():
     assert env.belief.visibility_grid is not None
     assert env.scene is not None
 
-    target_id = info.get("target_object_id")
-    assert target_id is not None
+    target_label = info.get("target_object_label")
+    assert target_label is not None
+    target_id = env.scene.label_to_id[target_label]
 
     gt_pos = np.array(
         p.getBasePositionAndOrientation(
@@ -456,22 +457,25 @@ def test_unknown_target_particle_distribution():
 
     status = (
         "known"
-        if target_id in env.belief.known_objects
-        else "occluded" if target_id in env.belief.occluded_objects else "unknown"
+        if target_label in env.belief.known_objects
+        else "occluded" if target_label in env.belief.occluded_objects else "unknown"
     )
 
     particle_xys = np.array(
         [
-            [particle.object_poses[target_id][0], particle.object_poses[target_id][1]]
+            [
+                particle.object_poses[target_label][0],
+                particle.object_poses[target_label][1],
+            ]
             for particle in env.belief.particles
-            if target_id in particle.object_poses
+            if target_label in particle.object_poses
         ]
     )
 
     print(f"\n{'='*60}")
     print("TARGET OBJECT PARTICLE DISTRIBUTION")
     print(
-        f"  target_id={target_id}  status={status}  confidence={env.belief.object_confidence.get(target_id, 0.0):.3f}"  # pylint: disable=line-too-long
+        f"  target_label={target_label}  status={status}  confidence={env.belief.object_confidence.get(target_label, 0.0):.3f}"  # pylint: disable=line-too-long
     )
     print(f"  ground truth (x,y): ({gt_pos[0]:.3f}, {gt_pos[1]:.3f})")
     print(f"  n particles: {len(particle_xys)}")

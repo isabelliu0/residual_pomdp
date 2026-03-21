@@ -16,11 +16,11 @@ from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots import create_pybullet_robot
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 from pybullet_helpers.utils import create_pybullet_block
+from tomsgeoms2d.structs import Circle
 
 from residual_controllers.beliefs import (
     Belief,
     CameraIntrinsics,
-    TabletopState,
     create_initial_belief,
     predict_belief,
     update_belief,
@@ -47,6 +47,8 @@ class TabletopScene:
     target_idx: int
     target_area_id: int
     physics_client_id: int
+    label_to_id: dict[str, int]
+    id_to_label: dict[int, str]
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,7 @@ class TabletopEnvState:
     object_poses: tuple[Pose, ...]
     held_object_idx: int | None
     grasp_transform: Pose | None
+    target_area_pose: Pose | None = None
 
 
 class TabletopPickEnv(gym.Env):
@@ -107,14 +110,6 @@ class TabletopPickEnv(gym.Env):
 
         p.setGravity(0, 0, -9.81, physicsClientId=self.physics_client_id)
 
-        self.robot: FingeredSingleArmPyBulletRobot | None = None
-        self.scene: TabletopScene | None = None
-        self.belief: Belief | None = None
-        self._camera_frame_ids: set[int] = set()
-
-        self._held_object_id: int | None = None
-        self._grasp_transform: Pose | None = None
-
         self.wrist_camera_offset = (0.03649966282414946, 0.0, 0.0574)
         self.wrist_camera_quat = (0.0, 0.0, -0.00512551, 0.99996205)
         fx, fy = 525.0, 525.0
@@ -127,6 +122,77 @@ class TabletopPickEnv(gym.Env):
             width=camera_width,
             height=camera_height,
         )
+
+        self.robot: FingeredSingleArmPyBulletRobot = cast(
+            FingeredSingleArmPyBulletRobot,
+            create_pybullet_robot("panda", self.physics_client_id),
+        )
+        gripper_pos = self.robot.get_joint_positions()[7:]
+        self.robot.set_joints(self.home_joint_positions + list(gripper_pos))
+
+        self.scene: TabletopScene | None = None
+        self.belief: Belief | None = None
+        self._camera_frame_ids: set[int] = set()
+        self._held_object_id: int | None = None
+        self._grasp_transform: Pose | None = None
+
+        self._table_id = self._create_table()
+
+        _distractor_colors = [
+            (0.0, 0.0, 1.0, 1.0),
+            (0.0, 1.0, 0.0, 1.0),
+            (1.0, 1.0, 0.0, 1.0),
+            (1.0, 0.5, 0.0, 1.0),
+            (0.5, 0.0, 1.0, 1.0),
+        ]
+        _target_color = (1.0, 0.0, 0.0, 1.0)
+        self._object_ids: list[int] = []
+        self._object_colors: list[tuple[float, float, float, float]] = []
+
+        target_block = create_pybullet_block(
+            color=_target_color,
+            half_extents=(0.025, 0.025, 0.025),
+            physics_client_id=self.physics_client_id,
+            mass=0.1,
+            friction=0.9,
+        )
+        set_pose(target_block, Pose(position=(-10.0, 0.0, 0.0)), self.physics_client_id)
+        self._object_ids.append(target_block)
+        self._object_colors.append(_target_color)
+
+        for i in range(num_objects - 1):
+            color = _distractor_colors[i % len(_distractor_colors)]
+            obj = create_pybullet_block(
+                color=color,
+                half_extents=(0.025, 0.025, 0.025),
+                physics_client_id=self.physics_client_id,
+                mass=0.1,
+                friction=0.9,
+            )
+            set_pose(
+                obj, Pose(position=(-10.0, float(i + 1), 0.0)), self.physics_client_id
+            )
+            self._object_ids.append(obj)
+            self._object_colors.append(color)
+
+        self._target_area_id = create_pybullet_block(
+            color=(0.0, 0.8, 0.0, 0.5),
+            half_extents=(0.05, 0.05, 0.002),
+            physics_client_id=self.physics_client_id,
+            mass=0,
+            friction=0.0,
+        )
+        set_pose(
+            self._target_area_id,
+            Pose(position=(-10.0, float(num_objects), 0.0)),
+            self.physics_client_id,
+        )
+
+        self._object_labels = [chr(65 + i) for i in range(num_objects)]
+        self._label_to_id: dict[str, int] = dict(
+            zip(self._object_labels, self._object_ids)
+        )
+        self._id_to_label: dict[int, str] = {v: k for k, v in self._label_to_id.items()}
 
         max_objects = 10
         self.observation_space = gym.spaces.Dict(
@@ -158,22 +224,6 @@ class TabletopPickEnv(gym.Env):
             dtype=np.float32,
         )
 
-    def _create_target_area(self, position: tuple[float, float, float]) -> int:
-        """Create a semi-transparent green target area marker on the table."""
-        target_area = create_pybullet_block(
-            color=(0.0, 0.8, 0.0, 0.5),
-            half_extents=(0.05, 0.05, 0.002),
-            physics_client_id=self.physics_client_id,
-            mass=0,
-            friction=0.0,
-        )
-        set_pose(
-            target_area,
-            Pose(position=position, orientation=(0, 0, 0, 1)),
-            self.physics_client_id,
-        )
-        return target_area
-
     def _create_table(self) -> int:
         table = create_pybullet_block(
             color=(0.6, 0.6, 0.6, 1.0),
@@ -188,86 +238,6 @@ class TabletopPickEnv(gym.Env):
             self.physics_client_id,
         )
         return table
-
-    def _spawn_objects_with_occlusion(self) -> tuple[list[int], list[tuple], int, int]:
-        object_ids: list[int] = []
-        colors = []
-        distractor_positions: list[tuple[float, float, float]] = []
-
-        target_idx = 0
-        target_pos: tuple[float, float, float] | None = None
-
-        target_obj = create_pybullet_block(
-            color=(1.0, 0.0, 0.0, 1.0),
-            half_extents=(0.025, 0.025, 0.025),
-            physics_client_id=self.physics_client_id,
-            mass=0.1,
-            friction=0.9,
-        )
-
-        target_y_range: tuple[float, float] = (-0.3, 0.3)
-        if np.random.random() < self.occlusion_prob:
-            target_y_range = (-0.5, -0.3)
-
-        target_pose = self._sample_free_object_pose(
-            target_obj,
-            x_range=(0.1, 0.25),
-            y_range=target_y_range,
-            z=0.025,
-            collision_check_ids=[],
-        )
-        target_pos = target_pose.position
-        object_ids.append(target_obj)
-        colors.append((1.0, 0.0, 0.0, 1.0))
-
-        for _ in range(self.num_objects - 1):
-            color = self._get_random_color()
-
-            obj = create_pybullet_block(
-                color=color,
-                half_extents=(0.025, 0.025, 0.025),
-                physics_client_id=self.physics_client_id,
-                mass=0.1,
-                friction=0.9,
-            )
-
-            x_range: tuple[float, float] = (0.3, 0.7)
-            y_range: tuple[float, float] = (-0.3, 0.3)
-
-            if np.random.random() < self.occlusion_prob:
-                tx, ty = target_pos[0], target_pos[1]
-                x_range = (max(0.3, tx - 0.1), min(0.7, tx + 0.3))
-                y_range = (max(-0.3, ty + 0.03), min(0.3, ty + 0.2))
-
-            distractor_pose = self._sample_free_object_pose(
-                obj,
-                x_range=x_range,
-                y_range=y_range,
-                z=0.025,
-                collision_check_ids=object_ids.copy(),
-            )
-
-            object_ids.append(obj)
-            colors.append(color)
-            distractor_positions.append(distractor_pose.position)
-
-        area_x = float(np.random.uniform(0.6, 0.75))
-        area_y = float(np.random.uniform(-0.2, 0.2))
-
-        target_area_id = self._create_target_area((area_x, area_y, 0.002))
-
-        return object_ids, colors, target_idx, target_area_id
-
-    def _get_random_color(self) -> tuple[float, float, float, float]:
-        colors = [
-            (0.0, 0.0, 1.0, 1.0),
-            (0.0, 1.0, 0.0, 1.0),
-            (1.0, 1.0, 0.0, 1.0),
-            (1.0, 0.5, 0.0, 1.0),
-            (0.5, 0.0, 1.0, 1.0),
-            (0.0, 1.0, 1.0, 1.0),
-        ]
-        return colors[int(np.random.randint(0, len(colors)))]
 
     def _euler_to_quat(
         self, roll: float, pitch: float, yaw: float
@@ -285,6 +255,54 @@ class TabletopPickEnv(gym.Env):
         qz = cr * cp * sy - sr * sp * cy
 
         return (qx, qy, qz, qw)
+
+    def _sample_target_pose_polar(
+        self,
+        object_id: int,
+        r_min: float,
+        r_max: float,
+        z: float,
+        collision_check_ids: list[int],
+        angle_min: float = -np.pi / 3,
+        angle_max: float = np.pi / 3,
+        max_attempts: int = 1000,
+    ) -> Pose:
+        exclusion_zone = Circle(0.0, 0.0, r_min)
+        for _ in range(max_attempts):
+            if np.random.random() < 0.5:
+                theta = np.random.uniform(np.pi / 6, angle_max)
+            else:
+                theta = np.random.uniform(angle_min, -np.pi / 6)
+            r = np.sqrt(np.random.uniform(r_min**2, r_max**2))
+            x = r * np.cos(theta)
+            y = r * np.sin(theta)
+            assert not exclusion_zone.contains_point(x, y)
+
+            yaw = np.random.uniform(0, 2 * np.pi)
+            quat = self._euler_to_quat(0, 0, yaw)
+            pose = Pose(position=(x, y, z), orientation=quat)
+            set_pose(object_id, pose, self.physics_client_id)
+
+            p.performCollisionDetection(physicsClientId=self.physics_client_id)
+
+            collision_free = True
+            for collision_id in collision_check_ids:
+                if check_body_collisions(
+                    object_id,
+                    collision_id,
+                    self.physics_client_id,
+                    distance_threshold=1e-3,
+                ):
+                    collision_free = False
+                    break
+
+            if collision_free:
+                return pose
+
+        raise RuntimeError(
+            f"Could not sample free target position after {max_attempts} attempts. "
+            f"r_min: {r_min}, r_max: {r_max}"
+        )
 
     def _sample_free_object_pose(
         self,
@@ -333,45 +351,51 @@ class TabletopPickEnv(gym.Env):
         if seed is not None:
             np.random.seed(seed)
 
-        if self.robot is not None:
-            p.removeBody(self.robot.robot_id, physicsClientId=self.physics_client_id)
-            if self.scene is not None:
-                p.removeBody(
-                    self.scene.table_id, physicsClientId=self.physics_client_id
-                )
-                for obj_id in self.scene.object_ids:
-                    p.removeBody(obj_id, physicsClientId=self.physics_client_id)
-                p.removeBody(
-                    self.scene.target_area_id, physicsClientId=self.physics_client_id
-                )
-
-        self.robot = cast(
-            FingeredSingleArmPyBulletRobot,
-            create_pybullet_robot("panda", self.physics_client_id),
-        )
         gripper_pos = self.robot.get_joint_positions()[7:]
         self.robot.set_joints(self.home_joint_positions + list(gripper_pos))
 
         self._held_object_id = None
         self._grasp_transform = None
 
-        table_id = self._create_table()
-        object_ids, colors, target_idx, target_area_id = (
-            self._spawn_objects_with_occlusion()
+        self._sample_target_pose_polar(
+            self._object_ids[0],
+            r_min=0.25,
+            r_max=0.35,
+            z=0.025,
+            collision_check_ids=[],
+        )
+        placed_ids = [self._object_ids[0]]
+
+        for i in range(1, self.num_objects):
+            self._sample_free_object_pose(
+                self._object_ids[i],
+                x_range=(0.3, 0.7),
+                y_range=(-0.4, 0.4),
+                z=0.025,
+                collision_check_ids=placed_ids.copy(),
+            )
+            placed_ids.append(self._object_ids[i])
+
+        set_pose(
+            self._target_area_id,
+            Pose(position=(0.65, 0.0, 0.002), orientation=(0, 0, 0, 1)),
+            self.physics_client_id,
         )
 
         self.scene = TabletopScene(
             robot=self.robot,
-            table_id=table_id,
-            object_ids=object_ids,
-            object_colors=colors,
-            target_idx=target_idx,
-            target_area_id=target_area_id,
+            table_id=self._table_id,
+            object_ids=self._object_ids,
+            object_colors=self._object_colors,
+            target_idx=0,
+            target_area_id=self._target_area_id,
             physics_client_id=self.physics_client_id,
+            label_to_id=self._label_to_id,
+            id_to_label=self._id_to_label,
         )
 
         obs = self.get_observation()
-        info = {"target_object_id": object_ids[int(target_idx)]}
+        info = {"target_object_label": "A"}
 
         camera_image = self.get_camera_image()
         self.belief = create_initial_belief(self, camera_image, num_particles=100)
@@ -380,6 +404,11 @@ class TabletopPickEnv(gym.Env):
             self._update_camera_visualization()
 
         return obs, info
+
+    @property
+    def object_labels(self) -> list[str]:
+        """Stable object labels for this environment."""
+        return self._object_labels
 
     @property
     def camera_to_hand_transform(self) -> Pose:
@@ -456,31 +485,6 @@ class TabletopPickEnv(gym.Env):
             "grasp_transform": grasp_tf,
             "target_area_pose": target_area_pose_arr,
         }
-
-    def get_obs_from_mean(
-        self, mean_state: TabletopState, source_object_ids: list[int]
-    ) -> dict:
-        """Build an obs dict with object poses from the belief mean state.
-
-        source_object_ids: the env whose belief produced mean_state, used
-        to map belief poses to this sim's objects by index rather than by
-        pybullet body ID (which differ across physics clients).
-        """
-        assert self.robot is not None
-        assert self.scene is not None
-
-        self.robot.set_joints(list(mean_state.joint_positions))
-
-        for sim_obj_id, src_obj_id in zip(self.scene.object_ids, source_object_ids):
-            mean_pose = mean_state.object_poses.get(src_obj_id)
-            if mean_pose is not None:
-                set_pose(
-                    sim_obj_id,
-                    Pose(position=mean_pose[:3], orientation=mean_pose[3:]),
-                    self.physics_client_id,
-                )
-
-        return self.get_observation()
 
     def get_camera_image(self) -> CameraImage:
         """Get RGB-D-Seg image from wrist-mounted camera."""
@@ -573,7 +577,12 @@ class TabletopPickEnv(gym.Env):
             self._update_camera_visualization()
 
         if self.belief is not None:
-            self.belief.held_object_id = self._held_object_id
+            held_label = (
+                self.scene.id_to_label.get(self._held_object_id)
+                if self._held_object_id is not None
+                else None
+            )
+            self.belief.held_object_label = held_label
 
             self.belief = predict_belief(
                 self.belief,
@@ -585,28 +594,34 @@ class TabletopPickEnv(gym.Env):
 
             camera_image = self.get_camera_image()
             camera_pose = self.get_camera_pose_se3()
-            area_pos, _ = p.getBasePositionAndOrientation(
+            area_aabb = p.getAABB(
                 self.scene.target_area_id, physicsClientId=self.physics_client_id
             )
-            excluded_xys = [(float(area_pos[0]), float(area_pos[1]), 0.1)]
+            excluded_aabbs = [
+                (
+                    float(area_aabb[0][0]),
+                    float(area_aabb[0][1]),
+                    float(area_aabb[1][0]),
+                    float(area_aabb[1][1]),
+                )
+            ]
             self.belief = update_belief(
                 self.belief,
                 camera_image,
                 camera_pose,
                 self.camera_intrinsics,
-                self.scene.object_ids,
+                self.scene.label_to_id,
                 self.physics_client_id,
                 table_id=self.scene.table_id,
-                excluded_xys=excluded_xys,
+                excluded_aabbs=excluded_aabbs,
             )
 
         obs = self.get_observation()
 
-        target_id = self.scene.object_ids[self.scene.target_idx]
         terminated = self._held_object_id is None and self._is_target_in_area()
         reward = 1.0 if terminated else 0.0
         truncated = False
-        info = {"target_object_id": target_id}
+        info = {"target_object_label": "A"}
 
         return obs, reward, terminated, truncated, info
 
@@ -645,15 +660,20 @@ class TabletopPickEnv(gym.Env):
         return None
 
     def _is_target_in_area(self) -> bool:
-        """Check if target block's xy center is within 5 cm of the target
+        """Check if the target block is fully contained within the target
         area."""
         assert self.scene is not None
         target_id = self.scene.object_ids[self.scene.target_idx]
-        target_pos = get_pose(target_id, self.physics_client_id).position
-        area_pos = get_pose(self.scene.target_area_id, self.physics_client_id).position
-        dx = target_pos[0] - area_pos[0]
-        dy = target_pos[1] - area_pos[1]
-        return dx * dx + dy * dy < 0.05 * 0.05
+        target_aabb = p.getAABB(target_id, physicsClientId=self.physics_client_id)
+        area_aabb = p.getAABB(
+            self.scene.target_area_id, physicsClientId=self.physics_client_id
+        )
+        return (
+            target_aabb[0][0] >= area_aabb[0][0]
+            and target_aabb[1][0] <= area_aabb[1][0]
+            and target_aabb[0][1] >= area_aabb[0][1]
+            and target_aabb[1][1] <= area_aabb[1][1]
+        )
 
     def _try_grasp(self) -> None:
         """Try to grasp an object near the end effector.
@@ -694,6 +714,19 @@ class TabletopPickEnv(gym.Env):
         """Get the ID of the currently held object, if any."""
         return self._held_object_id
 
+    @held_object_id.setter
+    def held_object_id(self, value: int | None) -> None:
+        self._held_object_id = value
+
+    @property
+    def grasp_transform(self) -> Pose | None:
+        """Get the current grasp transform (EE-to-object), if any."""
+        return self._grasp_transform
+
+    @grasp_transform.setter
+    def grasp_transform(self, value: Pose | None) -> None:
+        self._grasp_transform = value
+
     def get_state(self) -> TabletopEnvState:
         """Get current env state for sim synchronization."""
         assert self.robot is not None
@@ -703,6 +736,7 @@ class TabletopPickEnv(gym.Env):
         object_poses = tuple(
             get_pose(obj_id, self.physics_client_id) for obj_id in self.scene.object_ids
         )
+        target_area_pose = get_pose(self.scene.target_area_id, self.physics_client_id)
 
         held_object_idx = None
         if self._held_object_id is not None:
@@ -713,6 +747,7 @@ class TabletopPickEnv(gym.Env):
             object_poses=object_poses,
             held_object_idx=held_object_idx,
             grasp_transform=self._grasp_transform,
+            target_area_pose=target_area_pose,
         )
 
     def set_state(self, state: TabletopEnvState) -> None:
@@ -731,6 +766,13 @@ class TabletopPickEnv(gym.Env):
         for i, pose in enumerate(state.object_poses):
             obj_id = self.scene.object_ids[i]
             set_pose(obj_id, pose, self.physics_client_id)
+
+        if state.target_area_pose is not None:
+            set_pose(
+                self.scene.target_area_id,
+                state.target_area_pose,
+                self.physics_client_id,
+            )
 
         if state.held_object_idx is not None:
             self._held_object_id = self.scene.object_ids[state.held_object_idx]

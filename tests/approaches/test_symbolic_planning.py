@@ -1,6 +1,5 @@
 """Tests for optimistic belief abstraction and PDDL symbolic planning."""
 
-from residual_controllers.beliefs import get_mean_state
 from residual_controllers.benchmarks import TabletopPickTAMPSystem
 from residual_controllers.envs.tabletop_tamp import (
     TabletopAbstractor,
@@ -23,8 +22,8 @@ def test_optimistic_atoms_and_symbolic_plan():
     assert system._plan_env is not None  # pylint: disable=protected-access
     assert system.env.belief is not None
 
-    held_obs = system._plan_env.get_obs_from_mean(  # pylint: disable=protected-access
-        get_mean_state(system.env.belief), system.env.scene.object_ids
+    held_obs = system._build_plan_obs_from_belief(  # pylint: disable=protected-access
+        system.env.belief
     )
 
     types = TabletopTypes()
@@ -36,7 +35,7 @@ def test_optimistic_atoms_and_symbolic_plan():
     objects, mean_init_atoms, goal_atoms = abstractor.reset(held_obs)
 
     optimistic_atoms = abstractor.get_atoms_from_belief_particles(
-        system.env.belief.particles, system.env.scene.object_ids, held_obs
+        system.env.belief.particles, held_obs
     )
 
     print("\n=== Objects ===")

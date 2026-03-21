@@ -170,12 +170,25 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
                 half2 = get_half_extents_from_aabb(obj2_id, pcid)
                 obj2_top_z = pose2.position[2] + half2[2]
 
-                if abs(obj1_bottom_z - obj2_top_z) < 0.005 and check_body_collisions(
+                z_ok = abs(obj1_bottom_z - obj2_top_z) < 0.005
+                if not z_ok:
+                    continue
+
+                if obj2 == self._target_area_obj and obj1 in self._block_objs:
+                    block_x, block_y = pose1.position[0], pose1.position[1]
+                    ta_x, ta_y = pose2.position[0], pose2.position[1]
+                    if (
+                        block_x - half1[0] >= ta_x - half2[0]
+                        and block_x + half1[0] <= ta_x + half2[0]
+                        and block_y - half1[1] >= ta_y - half2[1]
+                        and block_y + half1[1] <= ta_y + half2[1]
+                    ):
+                        on_relations.add((obj1, obj2))
+                        on_target_area.add(obj1)
+                elif check_body_collisions(
                     obj1_id, obj2_id, pcid, distance_threshold=0.002
                 ):
                     on_relations.add((obj1, obj2))
-                    if obj2 == self._target_area_obj and obj1 in self._block_objs:
-                        on_target_area.add(obj1)
 
         return on_relations
 
@@ -215,22 +228,14 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
     def get_atoms_from_belief_particles(
         self,
         particles: list[TabletopState],
-        source_object_ids: list[int],
         held_obs: dict,
     ) -> set[GroundAtom]:
-        """Optimistic abstraction: union of atoms across all particles.
-
-        source_object_ids: real env's pybullet IDs, used to map particle poses
-        to this (plan) env's objects by index.
-        held_obs: observation providing held_object_idx (consistent across particles).
-        """
+        """Optimistic abstraction: union of atoms across all particles."""
         assert self.env.scene is not None
         union: set[GroundAtom] = set()
         for particle in particles:
-            for sim_obj_id, src_obj_id in zip(
-                self.env.scene.object_ids, source_object_ids
-            ):
-                pose = particle.object_poses.get(src_obj_id)
+            for label, sim_obj_id in self.env.scene.label_to_id.items():
+                pose = particle.object_poses.get(label)
                 if pose is not None:
                     set_pose(
                         sim_obj_id,
@@ -403,6 +408,14 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
         )
 
         initial_state.set_pybullet(self.env.robot)
+        if held_idx >= 0:
+            self.env.held_object_id = held_id
+            self.env.grasp_transform = Pose(
+                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
+            )
+        else:
+            self.env.held_object_id = None
+            self.env.grasp_transform = None
 
         return plan
 
@@ -554,6 +567,15 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
         )
 
         initial_state.set_pybullet(self.env.robot)
+        if held_idx >= 0:
+            self.env.held_object_id = held_id
+            self.env.grasp_transform = Pose(
+                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
+            )
+        else:
+            self.env.held_object_id = None
+            self.env.grasp_transform = None
+
         return plan
 
 

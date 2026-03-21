@@ -86,7 +86,7 @@ class BeliefConfig:
 
     # Pose injection from detections
     pose_injection_pos_std: float = 0.01
-    pose_injection_rot_std: float = 0.05
+    pose_injection_rot_std: float = 0.0
     pose_injection_reset_distance: float = 0.1
     pose_injection_min_alpha: float = 0.1
 
@@ -105,7 +105,7 @@ class TabletopState:
 
     joint_positions: tuple[float, ...]  # 9D: 7 arm + 2 fingers
     gripper_open: float  # [0, 1] normalized
-    object_poses: dict[int, SE3Pose]  # object_id -> (x,y,z,qx,qy,qz,qw)
+    object_poses: dict[str, SE3Pose]  # label ("A","B",...) -> (x,y,z,qx,qy,qz,qw)
 
 
 @dataclass
@@ -117,10 +117,10 @@ class Belief:
     """
 
     particles: list[TabletopState]
-    weights: np.ndarray  # shape (N,), normalized to sum to 1
-    known_objects: set[int]  # Objects currently detected
-    occluded_objects: set[int]  # Previously known, now in occluded region
-    unknown_objects: set[int]  # Never detected or lost (expected visible but not found)
-    object_confidence: dict[int, float] = field(default_factory=dict)
-    held_object_id: int | None = None  # Currently grasped object
+    weights: np.ndarray
+    known_objects: set[str]
+    occluded_objects: set[str]
+    unknown_objects: set[str]
+    object_confidence: dict[str, float] = field(default_factory=dict)
+    held_object_label: str | None = None
     visibility_grid: LogOddsOccupancyGrid | None = None

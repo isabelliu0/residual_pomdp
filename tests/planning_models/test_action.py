@@ -3,7 +3,6 @@
 import pytest
 from gymnasium.wrappers import RecordVideo
 
-from residual_controllers.beliefs import get_mean_state
 from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 from residual_controllers.envs.tabletop_tamp import (
     TabletopAbstractor,
@@ -33,9 +32,8 @@ def test_tabletop_with_tamp():
     sim.set_state(env.get_state())
 
     assert base_env.belief is not None
-    belief_obs = sim.get_obs_from_mean(
-        get_mean_state(base_env.belief), base_env.scene.object_ids
-    )
+    sim.set_state(base_env.get_state())
+    belief_obs = sim.get_observation()
 
     types = TabletopTypes()
     predicates = TabletopPredicates(types)
