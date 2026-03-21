@@ -13,6 +13,8 @@ from residual_controllers.approaches.base import (
     BaseApproach,
 )
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
+from residual_controllers.operating_region.features import extract_features
+from residual_controllers.operating_region.predictor import OperatingRegionPredictor
 from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
 
 
@@ -59,6 +61,8 @@ class TampNbvConfig:
     nbv_max_viewpoints: int = 10
     nbv_max_steps_per_viewpoint: int = 30
     nbv_min_info_gain: float = 10.0
+    predictor: OperatingRegionPredictor | None = None
+    predictor_threshold: float = 0.8
 
 
 class TampNbvApproach(BaseApproach[Any, Any]):
@@ -142,10 +146,35 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         return self._step_oig_plan()
 
     def _should_do_nbv(self, _info: dict[str, Any]) -> bool:
-        if self._current_subseq_idx < len(self._oig_subsequences):
-            _, obj_set = self._oig_subsequences[self._current_subseq_idx]
-            return self.system.is_object_set_unknown(obj_set)
-        return False
+        if self._current_subseq_idx >= len(self._oig_subsequences):
+            return False
+        subseq_actions, obj_set = self._oig_subsequences[self._current_subseq_idx]
+
+        if self.config.predictor is not None:
+            belief = (
+                self.system.get_belief() if hasattr(self.system, "get_belief") else None
+            )
+            assert belief is not None
+            operator_name = "+".join(
+                (a.strip("() ").split()[0] if a.strip("() ").split() else "unknown")
+                for a in subseq_actions
+            )
+            all_labels = list(belief.object_confidence.keys())
+            assert hasattr(self.system, "get_object_labels_for_names")
+            label_map = self.system.get_object_labels_for_names(obj_set)
+            relevant_labels = list(label_map.values())
+            features = extract_features(belief, all_labels, relevant_labels)
+            sigma_threshold = self.config.predictor.find_sigma_threshold(
+                operator_name, threshold=self.config.predictor_threshold
+            )
+            print(
+                f"[NBV] Predictor: op={operator_name}, "
+                f"relevant_sigma={features.relevant_sigma:.4f}, "
+                f"sigma_threshold={sigma_threshold:.4f}"
+            )
+            return features.relevant_sigma > sigma_threshold
+
+        return self.system.is_object_set_unknown(obj_set)
 
     def _step_nbv(self, _info: dict[str, Any]) -> ApproachStepResult[Any]:
         if self._nbv_state is None or self._mode != ExecutionMode.NBV:
@@ -163,6 +192,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         trajectory_complete = (
             len(self._nbv_state.trajectory) == 0
             or self._nbv_state.trajectory_idx >= len(self._nbv_state.trajectory) - 1
+            or self._nbv_state.trajectory_idx >= self.config.nbv_max_steps_per_viewpoint
         )
 
         if trajectory_complete and self._nbv_state.current_viewpoint is not None:

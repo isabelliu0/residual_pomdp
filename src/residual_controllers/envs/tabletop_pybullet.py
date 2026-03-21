@@ -792,3 +792,4 @@ class TabletopPickEnv(gym.Env):
     def close(self):
         if self.physics_client_id is not None:
             p.disconnect(physicsClientId=self.physics_client_id)
+            self.physics_client_id = None
