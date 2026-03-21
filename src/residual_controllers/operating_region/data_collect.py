@@ -125,7 +125,9 @@ def collect_episode(
                 plan = system.plan_for_goal(goal_add, seed=seed)
                 print("Planned! Ready to execute plan for goal_add:", goal_add)
                 success = _execute_plan(system, plan)
-                print(f"Executed! Success: {success}")
+                print(
+                    f"Executed! Success: {success}, uncertainty: {feats.relevant_sigma:.4f}"  # pylint: disable=line-too-long
+                )
 
                 records.append(
                     SubsequenceRecord(

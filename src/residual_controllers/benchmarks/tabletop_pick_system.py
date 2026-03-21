@@ -43,7 +43,7 @@ class TabletopPickTAMPSystem(BaseTAMPSystem[dict, np.ndarray]):
         self,
         seed: int | None = None,
         gui: bool = False,
-        num_objects: int = 5,
+        num_objects: int = 1,
         occlusion_prob: float = 0.7,
     ) -> None:
         self.gui = gui

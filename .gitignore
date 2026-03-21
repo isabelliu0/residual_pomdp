@@ -38,6 +38,7 @@ ENV/
 # Experiment outputs
 runs/
 logs/
+data/
 trained_models/
 videos/
 *.pkl

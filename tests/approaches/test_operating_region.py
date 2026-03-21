@@ -2,13 +2,69 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from pybullet_helpers.geometry import Pose
 
 from residual_controllers.benchmarks import TabletopPickTAMPSystem
 from residual_controllers.envs.tabletop_pybullet import TabletopEnvState
 from residual_controllers.operating_region.data_collect import collect_episode
+from residual_controllers.operating_region.features import BeliefFeatures
+from residual_controllers.operating_region.predictor import OperatingRegionPredictor
+from residual_controllers.operating_region.structs import SubsequenceRecord
 from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
+
+
+def test_predictor_fit() -> None:
+    """Fit predictor on synthetic records and predict on an unseen seed."""
+    rng = np.random.default_rng(42)
+    operator = "pick+place"
+
+    records: list[SubsequenceRecord] = []
+    for _ in range(200):
+        sigma = float(rng.uniform(0.0, 0.3))
+        success = sigma < 0.1
+        records.append(
+            SubsequenceRecord(
+                operator_name=operator,
+                relevant_object_labels=["A"],
+                features=BeliefFeatures(
+                    sigma_scalar=sigma,
+                    n_known=1,
+                    n_unknown=0,
+                    mean_confidence=1.0,
+                    relevant_sigma=sigma,
+                ),
+                success=success,
+            )
+        )
+
+    predictor = OperatingRegionPredictor()
+    predictor.fit(records)
+
+    assert operator in predictor.fitted_operators
+
+    low_sigma = BeliefFeatures(
+        sigma_scalar=0.02,
+        n_known=1,
+        n_unknown=0,
+        mean_confidence=1.0,
+        relevant_sigma=0.02,
+    )
+    high_sigma = BeliefFeatures(
+        sigma_scalar=0.25,
+        n_known=0,
+        n_unknown=1,
+        mean_confidence=0.2,
+        relevant_sigma=0.25,
+    )
+
+    p_low = predictor.predict(operator, low_sigma)
+    p_high = predictor.predict(operator, high_sigma)
+
+    assert p_low > 0.5
+    assert p_high < 0.5
+    assert p_low > p_high
 
 
 @pytest.mark.skip(reason="Requires GUI.")
