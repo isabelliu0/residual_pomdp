@@ -7,20 +7,14 @@ from typing import Any
 
 import numpy as np
 import pybullet as p
-from bilevel_planning.structs import Plan
+from bilevel_planning.structs import LiftedSkill, Plan
 from pybullet_helpers.geometry import Pose, get_pose, set_pose
 
 from residual_controllers.beliefs import get_best_particle_state
 from residual_controllers.beliefs.structs import Belief
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
-from residual_controllers.envs.tabletop_tamp import (
-    TabletopAbstractor,
-    TabletopPredicates,
-    TabletopTypes,
-    create_tabletop_operators,
-    create_tabletop_skills,
-)
+from residual_controllers.envs.tabletop_tamp_base import TabletopBaseAbstractor
 from residual_controllers.information_gathering import NBVPlanner
 from residual_controllers.information_gathering.nbv_planner import ViewpointCandidate
 from residual_controllers.tamp.pddl_utils import (
@@ -41,12 +35,18 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         self._plan_env: TabletopBaseEnv | None = None
         self._nbv_planner: NBVPlanner | None = None
         self._target_object_label: str | None = None
-        self.abstractor: TabletopAbstractor | None = None
+        self.abstractor: TabletopBaseAbstractor | None = None
         super().__init__(seed=seed)
 
     @abstractmethod
     def _create_plan_env(self) -> TabletopBaseEnv:
         """Create a headless duplicate of the env used for planning."""
+
+    @abstractmethod
+    def _get_planning_components(
+        self,
+    ) -> tuple[PlanningComponents, set[LiftedSkill]]:
+        """Return TAMP planning components for this environment."""
 
     def _on_reset(self, _obs: dict, info: dict[str, Any]) -> None:
         self._target_object_label = info.get("target_object_label")
@@ -76,17 +76,8 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
 
         obs = self._build_plan_obs_from_belief(self.env.belief)
 
-        types = TabletopTypes()
-        predicates = TabletopPredicates(types)
-        operators = create_tabletop_operators(types, predicates)
-        abstractor = TabletopAbstractor(self._plan_env, types, predicates)
-        components = PlanningComponents(
-            types=types.as_set(),
-            predicates=predicates,
-            operators=operators,
-            abstractor=abstractor,
-        )
-        skills = create_tabletop_skills(types, operators, self._plan_env, abstractor)
+        components, skills = self._get_planning_components()
+        abstractor = components.abstractor
         _, _, default_goal_atoms = abstractor.reset(obs)
         goal_atoms = (
             goal_atoms_override
@@ -117,10 +108,9 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
 
         held_obs = self._build_plan_obs_from_belief(self.env.belief)
 
-        types = TabletopTypes()
-        predicates = TabletopPredicates(types)
-        operators = create_tabletop_operators(types, predicates)
-        abstractor = TabletopAbstractor(self._plan_env, types, predicates)
+        components, _ = self._get_planning_components()
+        assert isinstance(components.abstractor, TabletopBaseAbstractor)
+        abstractor = components.abstractor
         objects, mean_init_atoms, goal_atoms = abstractor.reset(held_obs)
         self.abstractor = abstractor
 
@@ -133,9 +123,9 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
 
         return run_symbolic_planner(
             domain_name="tabletop",
-            types=types.as_set(),
-            predicates=predicates.as_set(),
-            operators=operators,
+            types=components.types,
+            predicates=components.predicates.as_set(),
+            operators=components.operators,
             objects=objects,
             init_atoms=init_atoms,
             goal_atoms=goal_atoms,
@@ -184,16 +174,16 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
     def get_subsequence_effects(
         self, subsequence: list[str]
     ) -> tuple[set[Any], set[Any]]:
-        if self.abstractor is None:
+        if self.abstractor is None or self._plan_env is None:
             return set(), set()
-        types = TabletopTypes()
-        predicates = TabletopPredicates(types)
-        operators = create_tabletop_operators(types, predicates)
+        components, _ = self._get_planning_components()
         objects_by_name = {
             obj.name.lower(): obj
             for obj in self.abstractor._pybullet_ids  # pylint: disable=protected-access
         }
-        return compute_subsequence_effects(subsequence, operators, objects_by_name)
+        return compute_subsequence_effects(
+            subsequence, components.operators, objects_by_name
+        )
 
     def is_object_set_unknown(self, obj_names: set[str]) -> bool:
         belief = self.get_belief()

@@ -1,10 +1,10 @@
 """Tests for optimistic belief abstraction and PDDL symbolic planning."""
 
 from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
-from residual_controllers.envs.tabletop_tamp import (
+from residual_controllers.envs.tabletop_tamp_base import TabletopTypes
+from residual_controllers.envs.tabletop_view_occlusion_tamp import (
     TabletopAbstractor,
     TabletopPredicates,
-    TabletopTypes,
     create_tabletop_operators,
 )
 from residual_controllers.tamp.pddl_utils import (

@@ -1,23 +1,19 @@
 """Tests for tabletop TAMP planning."""
 
-import pytest
 from gymnasium.wrappers import RecordVideo
 
-from residual_controllers.envs.tabletop_tamp import (
+from residual_controllers.envs.tabletop_tamp_base import TabletopTypes
+from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
+from residual_controllers.envs.tabletop_view_occlusion_tamp import (
     TabletopAbstractor,
     TabletopPredicates,
-    TabletopTypes,
     create_tabletop_operators,
     create_tabletop_skills,
 )
-from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
 from residual_controllers.tamp import PlanningComponents, run_tamp
 
 
-@pytest.mark.skip(
-    reason="Planning will fail since target object is not observed at init."
-)
-def test_tabletop_with_tamp():
+def test_tabletop_view_occlusion_with_tamp():
     """Test TabletopViewOcclusionEnv pick-and-place with bilevel TAMP
     planner."""
     seed = 123
@@ -32,9 +28,7 @@ def test_tabletop_with_tamp():
     sim.reset(seed=seed)
     sim.set_state(env.get_state())
 
-    assert base_env.belief is not None
-    sim.set_state(base_env.get_state())
-    belief_obs = sim.get_observation()
+    gt_obs = sim.get_observation()
 
     types = TabletopTypes()
     predicates = TabletopPredicates(types)
@@ -42,7 +36,7 @@ def test_tabletop_with_tamp():
 
     abstractor = TabletopAbstractor(sim, types, predicates)
 
-    objects, init_atoms, goal_atoms = abstractor.reset(belief_obs)
+    objects, init_atoms, goal_atoms = abstractor.reset(gt_obs)
     print(f"Objects: {[o.name for o in objects]}")
     print(f"Initial atoms: {[str(a) for a in init_atoms]}")
     print(f"Goal atoms: {[str(a) for a in goal_atoms]}")
@@ -65,7 +59,7 @@ def test_tabletop_with_tamp():
     plan, graph = run_tamp(
         components=components,
         skills=skills,
-        initial_state=belief_obs,
+        initial_state=gt_obs,
         goal=goal,
         state_abstractor=abstractor.step,
         transition_function=transition_fn,

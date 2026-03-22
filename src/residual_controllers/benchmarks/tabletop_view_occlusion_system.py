@@ -6,7 +6,15 @@ from pybullet_helpers.geometry import get_pose, set_pose
 
 from residual_controllers.benchmarks.tabletop_base_system import TabletopBaseSystem
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
+from residual_controllers.envs.tabletop_tamp_base import TabletopTypes
 from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
+from residual_controllers.envs.tabletop_view_occlusion_tamp import (
+    TabletopAbstractor,
+    TabletopPredicates,
+    create_tabletop_operators,
+    create_tabletop_skills,
+)
+from residual_controllers.tamp.structs import PlanningComponents
 
 
 class TabletopViewOcclusionTAMPSystem(TabletopBaseSystem):
@@ -36,6 +44,21 @@ class TabletopViewOcclusionTAMPSystem(TabletopBaseSystem):
             num_objects=self.num_objects,
             occlusion_prob=self.occlusion_prob,
         )
+
+    def _get_planning_components(self):  # type: ignore[override]
+        assert self._plan_env is not None
+        types = TabletopTypes()
+        predicates = TabletopPredicates(types)
+        operators = create_tabletop_operators(types, predicates)
+        abstractor = TabletopAbstractor(self._plan_env, types, predicates)
+        components = PlanningComponents(
+            types=types.as_set(),
+            predicates=predicates,
+            operators=operators,
+            abstractor=abstractor,
+        )
+        skills = create_tabletop_skills(types, operators, self._plan_env, abstractor)
+        return components, skills
 
     def _sync_extra_scene_objects(self) -> None:
         assert self._plan_env is not None
