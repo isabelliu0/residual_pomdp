@@ -7,12 +7,12 @@ import pytest
 from pybullet_helpers.camera import capture_image
 
 from residual_controllers.approaches import TampNbvApproach, TampNbvConfig
-from residual_controllers.benchmarks import TabletopPickTAMPSystem
+from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
 
 
 def test_approach_tabletop():
-    """Smoke test for TampNbvApproach on TabletopPickTAMPSystem."""
-    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    """Smoke test for TampNbvApproach on TabletopViewOcclusionTAMPSystem."""
+    system = TabletopViewOcclusionTAMPSystem(seed=42, gui=False, num_objects=1)
     obs, info = system.reset(seed=42)
 
     os.makedirs("videos/tamp-nbv-approach", exist_ok=True)
@@ -74,8 +74,8 @@ def test_approach_tabletop():
 
 @pytest.mark.skip(reason="Outdated test.")
 def test_tamp_nbv():
-    """Test the TAMP + NBV approach on the TabletopPickTAMPSystem."""
-    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    """Test the TAMP + NBV approach on the TabletopViewOcclusionTAMPSystem."""
+    system = TabletopViewOcclusionTAMPSystem(seed=42, gui=False, num_objects=5)
     obs, info = system.reset(seed=42)
 
     writer = None

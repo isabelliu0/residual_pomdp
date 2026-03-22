@@ -1,14 +1,14 @@
-"""Test for the TabletopPickEnv environment."""
+"""Test for the TabletopViewOcclusionEnv environment."""
 
 import time
 
-from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
+from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
 
 
 def test_basic_env():
     """Basic test."""
     print("Creating environment...")
-    env = TabletopPickEnv(gui=False, num_objects=5)
+    env = TabletopViewOcclusionEnv(gui=False, num_objects=5)
 
     print("Resetting environment...")
     obs, info = env.reset(seed=42)

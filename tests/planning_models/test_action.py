@@ -3,7 +3,6 @@
 import pytest
 from gymnasium.wrappers import RecordVideo
 
-from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
 from residual_controllers.envs.tabletop_tamp import (
     TabletopAbstractor,
     TabletopPredicates,
@@ -11,6 +10,7 @@ from residual_controllers.envs.tabletop_tamp import (
     create_tabletop_operators,
     create_tabletop_skills,
 )
+from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
 from residual_controllers.tamp import PlanningComponents, run_tamp
 
 
@@ -18,14 +18,15 @@ from residual_controllers.tamp import PlanningComponents, run_tamp
     reason="Planning will fail since target object is not observed at init."
 )
 def test_tabletop_with_tamp():
-    """Test TabletopPickEnv pick-and-place with bilevel TAMP planner."""
+    """Test TabletopViewOcclusionEnv pick-and-place with bilevel TAMP
+    planner."""
     seed = 123
 
-    base_env = TabletopPickEnv(
+    base_env = TabletopViewOcclusionEnv(
         gui=False, num_objects=1, render_mode="rgb_array_external"
     )
     env = RecordVideo(base_env, "videos/planning")
-    sim = TabletopPickEnv(gui=False, num_objects=1)
+    sim = TabletopViewOcclusionEnv(gui=False, num_objects=1)
 
     _, _ = env.reset(seed=seed)
     sim.reset(seed=seed)

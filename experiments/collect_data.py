@@ -6,7 +6,7 @@ import argparse
 import pickle
 from pathlib import Path
 
-from residual_controllers.benchmarks import TabletopPickTAMPSystem
+from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
 from residual_controllers.operating_region.data_collect import collect_episode
 
 
@@ -40,7 +40,7 @@ def main() -> None:
     for ep in range(args.num_episodes):
         seed = args.seed + ep
         print(f"\n=== Episode {ep + 1}/{args.num_episodes} (seed={seed}) ===")
-        system = TabletopPickTAMPSystem(
+        system = TabletopViewOcclusionTAMPSystem(
             seed=seed, gui=args.gui, num_objects=args.num_objects
         )
         try:

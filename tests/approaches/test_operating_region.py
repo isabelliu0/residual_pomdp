@@ -6,8 +6,11 @@ import numpy as np
 import pytest
 from pybullet_helpers.geometry import Pose
 
-from residual_controllers.benchmarks import TabletopPickTAMPSystem
-from residual_controllers.envs.tabletop_pybullet import TabletopEnvState
+from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
+from residual_controllers.envs.tabletop_view_occlusion import (
+    TabletopViewOcclusionEnv,
+    TabletopViewOcclusionEnvState,
+)
 from residual_controllers.operating_region.data_collect import collect_episode
 from residual_controllers.operating_region.features import BeliefFeatures
 from residual_controllers.operating_region.predictor import OperatingRegionPredictor
@@ -74,7 +77,7 @@ def test_collect_episode() -> None:
 
     all_records = []
     for ep in range(n_episodes):
-        system = TabletopPickTAMPSystem(seed=ep + 42, gui=True, num_objects=1)
+        system = TabletopViewOcclusionTAMPSystem(seed=ep + 42, gui=True, num_objects=1)
         records = collect_episode(system, seed=ep + 42, nbv_step_counts=(0, 10, 20))
         all_records.extend(records)
         print(f"\n=== Episode {ep}: {len(records)} records ===")
@@ -102,7 +105,7 @@ def test_particle_rollout_ablation() -> None:
     P(success) = fraction of particles where the fixed MAP plan achieves the goal.
     If below threshold, NBV would be triggered to reduce uncertainty first.
     """
-    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    system = TabletopViewOcclusionTAMPSystem(seed=42, gui=False, num_objects=5)
     system.reset(seed=42)
 
     symbolic_plan = system.get_symbolic_plan()
@@ -118,6 +121,7 @@ def test_particle_rollout_ablation() -> None:
 
     subseq_actions, _ = subsequences[0]
     goal_add, _ = system.get_subsequence_effects(subseq_actions)
+    assert system.env.scene is not None
     all_obj_ids = list(system.env.scene.object_ids)
 
     belief = system.env.belief
@@ -125,12 +129,14 @@ def test_particle_rollout_ablation() -> None:
         system.close()
         pytest.skip("No belief particles")
 
+    assert isinstance(system.env, TabletopViewOcclusionEnv)
     real_env_state = system.env.get_state()
 
     map_plan = system.plan_for_goal(goal_add, seed=42)
 
     assert system._plan_env is not None  # type: ignore[attr-defined]   # pylint: disable=protected-access
     plan_env = system._plan_env  # type: ignore[attr-defined]   # pylint: disable=protected-access
+    assert isinstance(plan_env, TabletopViewOcclusionEnv)
 
     n_particles = min(5, len(belief.particles))
     successes = 0
@@ -144,7 +150,7 @@ def test_particle_rollout_ablation() -> None:
             for obj_id in all_obj_ids
         )
         plan_env.set_state(
-            TabletopEnvState(
+            TabletopViewOcclusionEnvState(
                 robot_joints=real_env_state.robot_joints,
                 object_poses=particle_poses,
                 held_object_idx=real_env_state.held_object_idx,

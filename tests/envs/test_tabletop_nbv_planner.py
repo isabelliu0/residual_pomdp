@@ -6,7 +6,7 @@ import pytest
 from pybullet_helpers.geometry import multiply_poses
 from pybullet_helpers.gui import visualize_pose
 
-from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
+from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
 from residual_controllers.geometry import invert_pose
 from residual_controllers.information_gathering import (
     NBVPlanner,
@@ -20,7 +20,7 @@ from residual_controllers.information_gathering import (
 @pytest.mark.skip(reason="Requires GUI interaction")
 def test_nbv_planner_basic():
     """Test that NBV planner returns a valid viewpoint."""
-    env = TabletopPickEnv(gui=True, num_objects=3, occlusion_prob=1.0)
+    env = TabletopViewOcclusionEnv(gui=True, num_objects=3, occlusion_prob=1.0)
     _, _ = env.reset(seed=42)
 
     assert env.belief is not None
@@ -139,7 +139,7 @@ def test_nbv_planner_basic():
 @pytest.mark.skip(reason="Requires GUI interaction")
 def test_nbv_planner_for_target_object():
     """Test NBV planning to observe the target object specifically."""
-    env = TabletopPickEnv(gui=True, num_objects=3, occlusion_prob=1.0)
+    env = TabletopViewOcclusionEnv(gui=True, num_objects=3, occlusion_prob=1.0)
     _, info = env.reset(seed=42)
 
     target_object_label = info["target_object_label"]
