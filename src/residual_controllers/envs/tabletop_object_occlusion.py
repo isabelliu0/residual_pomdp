@@ -13,8 +13,10 @@ import objaverse
 import pybullet as p
 import trimesh
 from pybullet_helpers.geometry import Pose, get_pose, set_pose
+from pybullet_helpers.inverse_kinematics import check_body_collisions
 from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
+from tomsgeoms2d.structs import Circle
 
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 
@@ -234,10 +236,13 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
             ),
             self.physics_client_id,
         )
-        set_pose(
-            self._cup_id,
-            Pose(position=(0.55, 0.25, self._cup_z), orientation=(0, 0, 0, 1)),
-            self.physics_client_id,
+        milk_center = Pose(position=(0.55, 0.0, self._cup_z))
+        self._sample_target_pose_polar(
+            center=milk_center,
+            object_id=self._cup_id,
+            r=0.25,
+            z=self._cup_z,
+            collision_check_ids=[self._cereal_box_id, self._milk_carton_id],
         )
 
         self._scene = TabletopObjectOcclusionScene(
@@ -309,6 +314,11 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
     def _get_info(self) -> dict:
         return {"target_object_label": "MILK"}
 
+    def _get_grasp_aabb_threshold(self, obj_id: int) -> float:
+        if obj_id == self._milk_carton_id:
+            return 0.02
+        return 1e-4
+
     def get_collision_ids(self) -> set[int]:
         return {
             self._table_id,
@@ -369,11 +379,60 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
         assert self._scene is not None
         milk_id = self._scene.object_ids[self._scene.milk_carton_idx]
         cup_id = self._scene.object_ids[self._scene.cup_idx]
+        if self._held_object_id != milk_id:
+            return False
         milk_pose = get_pose(milk_id, self.physics_client_id)
         cup_pose = get_pose(cup_id, self.physics_client_id)
         cup_aabb = p.getAABB(cup_id, physicsClientId=self.physics_client_id)
         cup_top_z = float(cup_aabb[1][2])
+        milk_aabb = p.getAABB(milk_id, physicsClientId=self.physics_client_id)
+        milk_half_y = float(milk_aabb[1][1] - milk_aabb[0][1])
         milk_pos = np.array(milk_pose.position)
         cup_pos = np.array(cup_pose.position)
-        horizontal_dist = float(np.linalg.norm(milk_pos[:2] - cup_pos[:2]))
-        return horizontal_dist < 0.08 and milk_pos[2] > cup_top_z
+        horizontal_dist = float(np.linalg.norm(milk_pos[:2] - cup_pos[:2])) / 2
+        ee_pose = self.robot.get_end_effector_pose()
+        ee_z_world = p.rotateVector(ee_pose.orientation, [0, 0, 1])
+        is_tilted = abs(float(ee_z_world[2])) < 0.9
+        return (
+            horizontal_dist < milk_half_y + 0.05
+            and milk_pos[2] > cup_top_z
+            and is_tilted
+        )
+
+    def _sample_target_pose_polar(
+        self,
+        center: Pose,
+        object_id: int,
+        r: float,
+        z: float,
+        collision_check_ids: list[int],
+        angle_min: float = -np.pi / 3,
+        angle_max: float = np.pi / 3,
+        max_attempts: int = 1000,
+    ) -> Pose:
+        exclusion_zone = Circle(center.position[0], center.position[1], r - 0.1)
+        for _ in range(max_attempts):
+            if np.random.random() < 0.5:
+                theta = np.random.uniform(angle_max, np.pi / 2)
+            else:
+                theta = np.random.uniform(-np.pi / 2, angle_min)
+            x = center.position[0] + r * np.cos(theta)
+            y = center.position[1] + r * np.sin(theta)
+            assert not exclusion_zone.contains_point(x, y)
+
+            pose = Pose(position=(x, y, z))
+            set_pose(object_id, pose, self.physics_client_id)
+
+            p.performCollisionDetection(physicsClientId=self.physics_client_id)
+            collision_free = all(
+                not check_body_collisions(
+                    object_id, cid, self.physics_client_id, distance_threshold=1e-3
+                )
+                for cid in collision_check_ids
+            )
+            if collision_free:
+                return pose
+
+        raise RuntimeError(
+            f"Could not sample free cup position after {max_attempts} attempts."
+        )

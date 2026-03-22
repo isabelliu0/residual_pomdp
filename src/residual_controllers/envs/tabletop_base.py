@@ -348,14 +348,21 @@ class TabletopBaseEnv(gym.Env, ABC):
             segmentation=seg_array,
         )
 
+    def _get_grasp_aabb_threshold(self, _obj_id: int) -> float:
+        """Squared distance threshold for AABB-based grasp detection."""
+        return 1e-4
+
     def _try_grasp(self) -> None:
         ee_pose = self.robot.get_end_effector_pose()
+        ee_pos = np.array(ee_pose.position)
         for obj_id in self._get_movable_object_ids():
-            obj_pose = get_pose(obj_id, self.physics_client_id)
-            dist_sq = sum(
-                (a - b) ** 2 for a, b in zip(ee_pose.position, obj_pose.position)
+            aabb_min, aabb_max = p.getAABB(
+                obj_id, physicsClientId=self.physics_client_id
             )
-            if dist_sq < 1e-4:
+            nearest = np.clip(ee_pos, aabb_min, aabb_max)
+            dist_sq = float(np.sum((ee_pos - nearest) ** 2))
+            if dist_sq < self._get_grasp_aabb_threshold(obj_id):
+                obj_pose = get_pose(obj_id, self.physics_client_id)
                 self._held_object_id = obj_id
                 self._grasp_transform = multiply_poses(ee_pose.invert(), obj_pose)
                 break

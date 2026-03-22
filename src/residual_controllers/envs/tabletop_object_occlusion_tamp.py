@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 import pybullet as p
@@ -17,7 +17,12 @@ from bilevel_planning.trajectory_samplers.trajectory_sampler import (
     TrajectorySamplingFailure,
 )
 from gymnasium.spaces import Box
-from pybullet_helpers.geometry import Pose, get_pose, multiply_poses
+from pybullet_helpers.geometry import Pose, get_pose, iter_between_poses, multiply_poses
+from pybullet_helpers.inverse_kinematics import check_body_collisions
+from pybullet_helpers.motion_planning import (
+    create_joint_distance_fn,
+    smoothly_follow_end_effector_path,
+)
 from pybullet_helpers.states import KinematicState
 from relational_structs import (
     GroundAtom,
@@ -29,17 +34,21 @@ from relational_structs import (
 
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 from residual_controllers.envs.tabletop_manipulation import (
-    get_kinematic_plan_to_place_object,
+    get_kinematic_plan_to_pick_object,
 )
 from residual_controllers.envs.tabletop_object_occlusion import (
     TabletopObjectOcclusionScene,
 )
 from residual_controllers.envs.tabletop_tamp_base import (
+    GRASP_PARAMS_SPACE,
+    PickGroundController,
     TabletopBaseAbstractor,
     TabletopBasePredicates,
     TabletopTypes,
     create_pick_operator,
-    create_pick_skill,
+)
+from residual_controllers.tamp.collision_utils import (
+    run_smooth_motion_planning_to_pose_with_surface_check,
 )
 
 
@@ -77,6 +86,29 @@ class TabletopPourAbstractor(TabletopBaseAbstractor):
         self._milk_obj = self._movable_objs[scene.milk_carton_idx]
         self._cup_obj = self._movable_objs[scene.cup_idx]
 
+    def _get_on_relations(self, held_id: int | None) -> set[tuple[Object, Object]]:
+        """World-frame AABB contact check, works for tilted objects."""
+        pcid = self.env.physics_client_id
+        on_relations: set[tuple[Object, Object]] = set()
+        lower_candidates = [self._table_obj] + self._movable_objs
+        for obj1 in self._movable_objs:
+            obj1_id = self._pybullet_ids[obj1]
+            if obj1_id == held_id:
+                continue
+            obj1_bottom_z = float(p.getAABB(obj1_id, physicsClientId=pcid)[0][2])
+            for obj2 in lower_candidates:
+                if obj1 == obj2:
+                    continue
+                obj2_id = self._pybullet_ids[obj2]
+                obj2_top_z = float(p.getAABB(obj2_id, physicsClientId=pcid)[1][2])
+                if abs(obj1_bottom_z - obj2_top_z) >= 0.005:
+                    continue
+                if check_body_collisions(
+                    obj1_id, obj2_id, pcid, distance_threshold=0.002
+                ):
+                    on_relations.add((obj1, obj2))
+        return on_relations
+
     def _get_goal_atoms(self) -> set[GroundAtom]:
         assert self._milk_obj is not None and self._cup_obj is not None
         return {
@@ -107,11 +139,20 @@ class TabletopPourAbstractor(TabletopBaseAbstractor):
                 cup_pose = get_pose(cup_id, self.env.physics_client_id)
                 cup_aabb = p.getAABB(cup_id, physicsClientId=self.env.physics_client_id)
                 cup_top_z = float(cup_aabb[1][2])
+                milk_aabb = p.getAABB(
+                    milk_id, physicsClientId=self.env.physics_client_id
+                )
+                milk_half_y = float(milk_aabb[1][1] - milk_aabb[0][1]) / 2
                 milk_pos = np.array(milk_pose.position)
                 cup_pos = np.array(cup_pose.position)
+                ee_pose = self.env.robot.get_end_effector_pose()
+                ee_z_world = p.rotateVector(ee_pose.orientation, [0, 0, 1])
+                is_tilted = abs(float(ee_z_world[2])) < 0.9
                 if (
-                    float(np.linalg.norm(milk_pos[:2] - cup_pos[:2])) < 0.08
+                    float(np.linalg.norm(milk_pos[:2] - cup_pos[:2]))
+                    < milk_half_y + 0.05
                     and milk_pos[2] > cup_top_z
+                    and is_tilted
                 ):
                     atoms.add(
                         GroundAtom(
@@ -130,8 +171,106 @@ POUR_PARAMS_SPACE = Box(
 )
 
 
+class ObjPickGroundController(PickGroundController):
+    """Pick controller using top-of-object grasp for objaverse objects."""
+
+    def _compute_kinematic_plan(self) -> list[KinematicState] | None:
+        assert self.env.robot is not None
+        assert self.env.scene is not None
+        assert self._current_obs is not None
+
+        _, obj, surface = self.objects
+        object_id = self.abstractor.get_pybullet_id(obj)
+        surface_id = self.abstractor.get_pybullet_id(surface)
+
+        robot_joints = list(self._current_obs["joint_positions"])
+        if len(robot_joints) >= 9:
+            finger_avg = (robot_joints[7] + robot_joints[8]) / 2
+            robot_joints[7] = finger_avg
+            robot_joints[8] = finger_avg
+
+        object_poses: dict[int, Pose] = {
+            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),  # type: ignore[union-attr] # pylint: disable=line-too-long
+        }
+        obs_poses = self._current_obs["object_poses"]
+        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+            pos = tuple(obs_poses[i, :3])
+            orn = tuple(obs_poses[i, 3:])
+            object_poses[obj_id] = Pose(position=pos, orientation=orn)
+
+        held_idx = int(self._current_obs["held_object_idx"][0])
+        attachments: dict[int, Pose] = {}
+        held_id = None
+        grasp_tf = self._current_obs["grasp_transform"]
+        if held_idx >= 0:
+            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            attachments[held_id] = Pose(
+                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
+            )
+
+        initial_state = KinematicState(robot_joints, object_poses, attachments)
+        initial_state.set_pybullet(self.env.robot)
+
+        collision_ids = set(object_poses.keys())
+        plan = get_kinematic_plan_to_pick_object(
+            initial_state,
+            self.env.robot,
+            object_id,
+            surface_id,
+            collision_ids,
+            grasp_generator=self._grasp_poses(object_id),
+            grasp_generator_iters=5,
+            max_motion_planning_time=1.0,
+            max_smoothing_iters_per_step=1,
+        )
+
+        initial_state.set_pybullet(self.env.robot)
+        if held_idx >= 0:
+            self.env.held_object_id = held_id
+            self.env.grasp_transform = Pose(
+                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
+            )
+        else:
+            self.env.held_object_id = None
+            self.env.grasp_transform = None
+
+        return plan
+
+    def _grasp_poses(self, object_id: int) -> Iterator[Pose]:
+        """Generate grasp poses at the top of the object (in object frame).
+
+        Computes the grasp in world frame (directly above the AABB top)
+        and converts to object frame, so it works regardless of object
+        orientation.
+        """
+        assert self.env.robot is not None
+        aabb = p.getAABB(object_id, physicsClientId=self.env.physics_client_id)
+        obj_center_x = (float(aabb[0][0]) + float(aabb[1][0])) / 2
+        obj_center_y = (float(aabb[0][1]) + float(aabb[1][1])) / 2
+        aabb_top_z = float(aabb[1][2])
+
+        ee_pose = self.env.robot.get_end_effector_pose()
+        _, _, ee_yaw = p.getEulerFromQuaternion(ee_pose.orientation)
+
+        obj_pose = get_pose(object_id, self.env.physics_client_id)
+        inv_pos, inv_orn = p.invertTransform(obj_pose.position, obj_pose.orientation)
+        obj_pose_inv = Pose(position=inv_pos, orientation=inv_orn)
+
+        for z_rot in [ee_yaw, ee_yaw - np.pi / 2]:
+            world_grasp_orientation = p.getQuaternionFromEuler([np.pi, 0, z_rot])
+            world_grasp = Pose(
+                (obj_center_x, obj_center_y, aabb_top_z), world_grasp_orientation
+            )
+            yield multiply_poses(obj_pose_inv, world_grasp)
+
+
 class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
-    """Controller for positioning held milk carton above the cup."""
+    """Controller for positioning held milk carton above the cup for pouring.
+
+    Moves to a lifting pose, then to above the cup (with slight -x
+    offset), then tilts the carton 30 degrees around the x axis to
+    simulate pouring.
+    """
 
     def __init__(
         self,
@@ -191,10 +330,7 @@ class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
         _, milk_obj, cup_obj = self.objects
         milk_id = self.abstractor.get_pybullet_id(milk_obj)
         cup_id = self.abstractor.get_pybullet_id(cup_obj)
-
-        cup_pose = get_pose(cup_id, self.env.physics_client_id)
-        cup_aabb = p.getAABB(cup_id, physicsClientId=self.env.physics_client_id)
-        cup_top_z = float(cup_aabb[1][2])
+        table_id = self.env.scene.table_id  # type: ignore[union-attr]
 
         robot_joints = list(self._current_obs["joint_positions"])
         if len(robot_joints) >= 9:
@@ -203,7 +339,7 @@ class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
             robot_joints[8] = finger_avg
 
         object_poses: dict[int, Pose] = {
-            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),  # type: ignore[union-attr] # pylint: disable=line-too-long
+            table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
         obs_poses = self._current_obs["object_poses"]
         for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
@@ -223,38 +359,82 @@ class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
 
         initial_state = KinematicState(robot_joints, object_poses, attachments)
         initial_state.set_pybullet(self.env.robot)
+        state = initial_state
+        plan = [state]
 
-        pour_offset = 0.06
-        target_milk_pose = Pose(
-            position=(
-                float(cup_pose.position[0]),
-                float(cup_pose.position[1]),
-                cup_top_z + pour_offset,
+        cup_pose = get_pose(cup_id, self.env.physics_client_id)
+        cup_aabb = p.getAABB(cup_id, physicsClientId=self.env.physics_client_id)
+        cup_top_z = float(cup_aabb[1][2])
+
+        milk_aabb = p.getAABB(milk_id, physicsClientId=self.env.physics_client_id)
+        milk_height = float(milk_aabb[1][2] - milk_aabb[0][2])
+        milk_y = float(milk_aabb[1][1] - milk_aabb[0][1]) / 2
+
+        curr_ee_pose = self.env.robot.get_end_effector_pose()
+        lifting_height = float(milk_aabb[1][2]) + milk_height
+        pour_height = milk_height + 0.02
+
+        pour_position = (
+            float(cup_pose.position[0]),
+            float(cup_pose.position[1]) - milk_y,
+            cup_top_z + pour_height,
+        )
+
+        position_waypoints = [
+            Pose(
+                (curr_ee_pose.position[0], curr_ee_pose.position[1], lifting_height),
+                curr_ee_pose.orientation,
             ),
-            orientation=(0.0, 0.0, 0.0, 1.0),
+            Pose(pour_position, curr_ee_pose.orientation),
+        ]
+
+        milk_attachment = attachments[milk_id]
+        collision_ids = set(object_poses.keys()) - {milk_id, cup_id, table_id}
+
+        for waypoint in position_waypoints:
+            state.set_pybullet(self.env.robot)
+            motion_plan = run_smooth_motion_planning_to_pose_with_surface_check(
+                waypoint,
+                self.env.robot,
+                collision_ids=collision_ids,
+                surface_id=table_id,
+                end_effector_frame_to_plan_frame=Pose.identity(),
+                seed=0,
+                max_time=2.0,
+                held_object=milk_id,
+                base_link_to_held_obj=milk_attachment,
+            )
+            if motion_plan is None:
+                return None
+            for robot_joints_step in motion_plan:
+                state = state.copy_with(robot_joints=robot_joints_step)
+                plan.append(state)
+
+        # Tilt
+        state.set_pybullet(self.env.robot)
+        pre_tilt_ee = self.env.robot.get_end_effector_pose()
+        tilt_quat = p.getQuaternionFromEuler([np.pi / 6, 0, 0])
+        post_tilt_pose = multiply_poses(pre_tilt_ee, Pose((0, 0, 0), tilt_quat))
+        tilt_path = list(
+            iter_between_poses(
+                pre_tilt_ee, post_tilt_pose, num_interp=10, include_start=False
+            )
         )
-
-        table_pose = get_pose(
-            self.env.scene.table_id, self.env.physics_client_id  # type: ignore[union-attr] # pylint: disable=line-too-long
-        )
-        relative_placement = multiply_poses(table_pose.invert(), target_milk_pose)
-
-        def placement_gen():
-            yield relative_placement
-
-        collision_ids = set(object_poses.keys())
-        plan = get_kinematic_plan_to_place_object(
-            initial_state,
+        joint_distance_fn = create_joint_distance_fn(self.env.robot)
+        tilt_joints = smoothly_follow_end_effector_path(
             self.env.robot,
-            milk_id,
-            self.env.scene.table_id,  # type: ignore[union-attr]
-            collision_ids,
-            placement_generator=placement_gen(),  # type: ignore[no-untyped-call]
-            placement_generator_iters=1,
-            max_motion_planning_time=2.0,
-            max_smoothing_iters_per_step=1,
-            retract_after=False,
+            tilt_path,
+            initial_joints=state.robot_joints,
+            collision_ids=collision_ids,
+            joint_distance_fn=joint_distance_fn,
+            held_object=milk_id,
+            base_link_to_held_obj=milk_attachment,
+            max_time=2.0,
+            include_start=False,
         )
+        for robot_joints_step in tilt_joints:
+            state = state.copy_with(robot_joints=robot_joints_step)
+            plan.append(state)
 
         initial_state.set_pybullet(self.env.robot)
         if held_idx >= 0:
@@ -307,11 +487,20 @@ def create_tabletop_pour_skills(
     robot_var = Variable("?robot", types.robot)
     obj_var = Variable("?obj", types.obj)
     cup_var = Variable("?cup", types.obj)
+    surface_var = Variable("?surface", types.obj)
 
     pick_operator = next(op for op in operators if op.name == "pick")
     pour_operator = next(op for op in operators if op.name == "pour")
 
-    pick_skill = create_pick_skill(types, pick_operator, env, abstractor)
+    def _obj_pick_factory(e: TabletopBaseEnv, a: TabletopPourAbstractor) -> Any:
+        return lambda objects: ObjPickGroundController(objects, e, a)
+
+    pick_lifted: LiftedParameterizedController = LiftedParameterizedController(
+        variables=[robot_var, obj_var, surface_var],
+        controller_cls=_obj_pick_factory(env, abstractor),
+        params_space=GRASP_PARAMS_SPACE,
+    )
+    pick_skill = LiftedSkill(operator=pick_operator, controller=pick_lifted)
 
     def _pour_factory(e: TabletopBaseEnv, a: TabletopPourAbstractor) -> Any:
         return lambda objects: PourGroundController(objects, e, a)
