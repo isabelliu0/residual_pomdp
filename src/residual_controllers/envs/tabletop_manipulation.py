@@ -14,12 +14,15 @@ from pybullet_helpers.inverse_kinematics import InverseKinematicsError
 from pybullet_helpers.link import get_relative_link_pose
 from pybullet_helpers.motion_planning import (
     create_joint_distance_fn,
-    run_smooth_motion_planning_to_pose,
     smoothly_follow_end_effector_path,
 )
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 from pybullet_helpers.states import KinematicState
 from pybullet_helpers.utils import get_closest_points_with_optional_links
+
+from residual_controllers.tamp.collision_utils import (
+    run_smooth_motion_planning_to_pose_with_surface_check,
+)
 
 
 def get_kinematic_plan_to_pick_object(
@@ -102,10 +105,11 @@ def get_kinematic_plan_to_pick_object(
         pregrasp_pose = multiply_poses(grasp, pregrasp_tf)
 
         # Motion plan to the pregrasp pose.
-        plan_to_pregrasp = run_smooth_motion_planning_to_pose(
+        plan_to_pregrasp = run_smooth_motion_planning_to_pose_with_surface_check(
             pregrasp_pose,
             robot,
             collision_ids=collision_ids - {surface_id},
+            surface_id=surface_id,
             end_effector_frame_to_plan_frame=Pose.identity(),
             seed=seed,
             max_time=max_motion_planning_time,
@@ -352,10 +356,11 @@ def get_kinematic_plan_to_place_object(
         state.set_pybullet(robot)
 
         # Motion plan to the preplace pose.
-        plan_to_preplace = run_smooth_motion_planning_to_pose(
+        plan_to_preplace = run_smooth_motion_planning_to_pose_with_surface_check(
             preplace_pose,
             robot,
             collision_ids=collision_ids - {object_id, surface_id},
+            surface_id=surface_id,
             end_effector_frame_to_plan_frame=Pose.identity(),
             seed=seed,
             max_time=max_motion_planning_time,
