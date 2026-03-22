@@ -1,10 +1,10 @@
 """Tests for optimistic belief abstraction and PDDL symbolic planning."""
 
-from residual_controllers.benchmarks import TabletopPickTAMPSystem
-from residual_controllers.envs.tabletop_tamp import (
+from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
+from residual_controllers.envs.tabletop_tamp_base import TabletopTypes
+from residual_controllers.envs.tabletop_view_occlusion_tamp import (
     TabletopAbstractor,
     TabletopPredicates,
-    TabletopTypes,
     create_tabletop_operators,
 )
 from residual_controllers.tamp.pddl_utils import (
@@ -16,7 +16,7 @@ from residual_controllers.tamp.pddl_utils import (
 
 def test_optimistic_atoms_and_symbolic_plan():
     """Print optimistic init atoms and PDDL symbolic plan."""
-    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    system = TabletopViewOcclusionTAMPSystem(seed=42, gui=False, num_objects=5)
     _, _ = system.reset(seed=42)
 
     assert system._plan_env is not None  # pylint: disable=protected-access
@@ -79,7 +79,7 @@ def test_optimistic_atoms_and_symbolic_plan():
 def test_oig_single_subsequence():
     """OIG on the tabletop plan produces one subsequence with the target
     object."""
-    system = TabletopPickTAMPSystem(seed=42, gui=False, num_objects=5)
+    system = TabletopViewOcclusionTAMPSystem(seed=42, gui=False, num_objects=5)
     system.reset(seed=42)
 
     symbolic_plan = system.get_symbolic_plan()
@@ -105,7 +105,7 @@ def test_oig_single_subsequence():
 def test_nbv_triggered():
     """With full occlusion, NBV should be triggered for the target's
     subsequence, and net goal effects should be non-empty."""
-    system = TabletopPickTAMPSystem(
+    system = TabletopViewOcclusionTAMPSystem(
         seed=42, gui=False, num_objects=5, occlusion_prob=0.7
     )
     system.reset(seed=42)

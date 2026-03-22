@@ -1,4 +1,5 @@
-"""Integration test for end-to-end belief tracking in TabletopPickEnv."""
+"""Integration test for end-to-end belief tracking in
+TabletopViewOcclusionEnv."""
 
 import os
 import time
@@ -15,17 +16,17 @@ from residual_controllers.beliefs import (
     LogOddsOccupancyGrid,
     compute_belief_diagnostics,
 )
-from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
+from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
 
 
 def test_nominal_policy_reach_target():
     """Test nominal policy that reaches toward target with visibility grid
     monitoring and visualization."""
-    base_env = TabletopPickEnv(
+    base_env = TabletopViewOcclusionEnv(
         gui=False, num_objects=3, occlusion_prob=0.5, render_mode="rgb_array"
     )
     env = RecordVideo(base_env, "videos/belief-integration-test")
-    sim = TabletopPickEnv(gui=False, num_objects=3, occlusion_prob=0.5)
+    sim = TabletopViewOcclusionEnv(gui=False, num_objects=3, occlusion_prob=0.5)
 
     _, _ = env.reset(seed=42)
     _, _ = sim.reset(seed=42)
@@ -124,7 +125,7 @@ def test_nominal_policy_reach_target():
     sim.close()
 
 
-def _print_visibility_stats(env: TabletopPickEnv, step: int | str) -> None:
+def _print_visibility_stats(env: TabletopViewOcclusionEnv, step: int | str) -> None:
     """Helper to print visibility grid statistics."""
     if env.belief is None or env.belief.visibility_grid is None:
         return
@@ -164,7 +165,7 @@ def _print_visibility_stats(env: TabletopPickEnv, step: int | str) -> None:
 
 def test_particle_filter_diagnostics():
     """Test particle filter with camera tilt sequence to reveal objects."""
-    env = TabletopPickEnv(gui=False, num_objects=5, occlusion_prob=0.7)
+    env = TabletopViewOcclusionEnv(gui=False, num_objects=5, occlusion_prob=0.7)
     _, _ = env.reset(seed=42)
 
     assert env.belief is not None
@@ -335,7 +336,7 @@ def test_particle_filter_diagnostics():
 def test_table_surface_unseen_voxels():
     """Print unseen voxels near table surface after reset and where unknown
     object particles fall."""
-    env = TabletopPickEnv(gui=False, num_objects=5, occlusion_prob=0.7)
+    env = TabletopViewOcclusionEnv(gui=False, num_objects=5, occlusion_prob=0.7)
     env.reset(seed=42)
 
     assert env.belief is not None
@@ -438,7 +439,7 @@ def test_table_surface_unseen_voxels():
 
 def test_unknown_target_particle_distribution():
     """Print particle distribution for the target object after reset."""
-    env = TabletopPickEnv(gui=False, num_objects=5, occlusion_prob=0.7)
+    env = TabletopViewOcclusionEnv(gui=False, num_objects=5, occlusion_prob=0.7)
     _, info = env.reset(seed=42)
 
     assert env.belief is not None

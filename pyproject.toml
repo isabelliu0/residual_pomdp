@@ -19,6 +19,8 @@ dependencies = [
     "pybullet>=3.2.5",
     "numba",
     "scikit-learn",
+    "objaverse>=0.1.7",
+    "trimesh[easy]>=4.0.0",
     "pybullet_helpers@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=pybullet-helpers",
     "tomsgeoms2d@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=toms-geoms-2d",
     "relational_structs@git+https://github.com/Princeton-Robot-Planning-and-Learning/prpl-mono.git#subdirectory=relational-structs",
@@ -77,5 +79,7 @@ module = [
     "bilevel_planning.*",
     "prpl_utils.*",
     "sklearn.*",
+    "objaverse.*",
+    "trimesh.*",
 ]
 ignore_missing_imports = true

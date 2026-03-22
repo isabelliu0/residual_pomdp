@@ -9,7 +9,7 @@ import imageio
 from pybullet_helpers.camera import capture_image
 
 from residual_controllers.approaches import TampNbvApproach, TampNbvConfig
-from residual_controllers.benchmarks import TabletopPickTAMPSystem
+from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
 from residual_controllers.operating_region.predictor import OperatingRegionPredictor
 
 
@@ -22,7 +22,9 @@ def run_episode(
     video_dir: Path | None,
 ) -> dict:
     """Run a single evaluation episode."""
-    system = TabletopPickTAMPSystem(seed=seed, gui=gui, num_objects=num_objects)
+    system = TabletopViewOcclusionTAMPSystem(
+        seed=seed, gui=gui, num_objects=num_objects
+    )
     try:
         obs, info = system.reset(seed=seed)
 

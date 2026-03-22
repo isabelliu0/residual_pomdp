@@ -1,4 +1,4 @@
-"""TAMP components for TabletopPickEnv."""
+"""TAMP components for TabletopBaseEnv."""
 
 from __future__ import annotations
 
@@ -43,12 +43,12 @@ from residual_controllers.tamp.structs import (
 )
 
 if TYPE_CHECKING:
-    from residual_controllers.envs.tabletop_pybullet import TabletopPickEnv
+    from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 
 
 @dataclass
 class TabletopTypes(TypeContainer):
-    """Container for TabletopPickEnv types."""
+    """Container for TabletopBaseEnv types."""
 
     def __init__(self) -> None:
         self.robot = Type("robot")
@@ -60,7 +60,7 @@ class TabletopTypes(TypeContainer):
 
 @dataclass
 class TabletopPredicates(PredicateContainer):
-    """Container for TabletopPickEnv predicates."""
+    """Container for TabletopBaseEnv predicates."""
 
     def __init__(self, types: TabletopTypes) -> None:
         self.holding = Predicate("holding", [types.robot, types.obj])
@@ -87,11 +87,11 @@ class TabletopPredicates(PredicateContainer):
 
 
 class TabletopAbstractor(BeliefAbstractor[dict]):
-    """Abstractor for TabletopPickEnv."""
+    """Abstractor for TabletopBaseEnv."""
 
     def __init__(
         self,
-        env: TabletopPickEnv,
+        env: TabletopBaseEnv,
         types: TabletopTypes,
         predicates: TabletopPredicates,
     ):
@@ -249,7 +249,7 @@ class TabletopAbstractor(BeliefAbstractor[dict]):
 def create_tabletop_operators(
     types: TabletopTypes, predicates: TabletopPredicates
 ) -> set[LiftedOperator]:
-    """Create lifted operators for TabletopPickEnv."""
+    """Create lifted operators for TabletopBaseEnv."""
     robot = Variable("?robot", types.robot)
     obj = Variable("?obj", types.obj)
     surface = Variable("?surface", types.obj)
@@ -300,7 +300,7 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
     def __init__(
         self,
         objects: Sequence[Object],
-        env: TabletopPickEnv,
+        env: TabletopBaseEnv,
         abstractor: TabletopAbstractor,
     ):
         super().__init__(objects)
@@ -446,7 +446,7 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
     def __init__(
         self,
         objects: Sequence[Object],
-        env: TabletopPickEnv,
+        env: TabletopBaseEnv,
         abstractor: TabletopAbstractor,
     ):
         super().__init__(objects)
@@ -582,10 +582,10 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
 def create_tabletop_skills(
     types: TabletopTypes,
     operators: set[LiftedOperator],
-    env: TabletopPickEnv,
+    env: TabletopBaseEnv,
     abstractor: TabletopAbstractor,
 ) -> set[LiftedSkill]:
-    """Create lifted skills for TabletopPickEnv."""
+    """Create lifted skills for TabletopBaseEnv."""
     robot_var = Variable("?robot", types.robot)
     obj_var = Variable("?obj", types.obj)
     surface_var = Variable("?surface", types.obj)
@@ -594,10 +594,10 @@ def create_tabletop_skills(
     pick_operator = next(op for op in operators if op.name == "pick")
     place_operator = next(op for op in operators if op.name == "place")
 
-    def pick_controller_factory(env: TabletopPickEnv, abstractor: TabletopAbstractor):
+    def pick_controller_factory(env: TabletopBaseEnv, abstractor: TabletopAbstractor):
         return lambda objects: PickGroundController(objects, env, abstractor)
 
-    def place_controller_factory(env: TabletopPickEnv, abstractor: TabletopAbstractor):
+    def place_controller_factory(env: TabletopBaseEnv, abstractor: TabletopAbstractor):
         return lambda objects: PlaceGroundController(objects, env, abstractor)
 
     pick_lifted_controller: LiftedParameterizedController = (
