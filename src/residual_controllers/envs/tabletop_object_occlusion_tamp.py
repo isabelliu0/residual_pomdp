@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterator, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import pybullet as p
@@ -33,15 +33,12 @@ from relational_structs import (
 )
 
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
-from residual_controllers.envs.tabletop_manipulation import (
-    get_kinematic_plan_to_pick_object,
-)
 from residual_controllers.envs.tabletop_object_occlusion import (
     TabletopObjectOcclusionScene,
 )
 from residual_controllers.envs.tabletop_tamp_base import (
     GRASP_PARAMS_SPACE,
-    PickGroundController,
+    ObjPickGroundController,
     TabletopBaseAbstractor,
     TabletopBasePredicates,
     TabletopTypes,
@@ -169,99 +166,6 @@ POUR_PARAMS_SPACE = Box(
     high=np.array([], dtype=np.float32),
     shape=(0,),
 )
-
-
-class ObjPickGroundController(PickGroundController):
-    """Pick controller using top-of-object grasp for objaverse objects."""
-
-    def _compute_kinematic_plan(self) -> list[KinematicState] | None:
-        assert self.env.robot is not None
-        assert self.env.scene is not None
-        assert self._current_obs is not None
-
-        _, obj, surface = self.objects
-        object_id = self.abstractor.get_pybullet_id(obj)
-        surface_id = self.abstractor.get_pybullet_id(surface)
-
-        robot_joints = list(self._current_obs["joint_positions"])
-        if len(robot_joints) >= 9:
-            finger_avg = (robot_joints[7] + robot_joints[8]) / 2
-            robot_joints[7] = finger_avg
-            robot_joints[8] = finger_avg
-
-        object_poses: dict[int, Pose] = {
-            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),  # type: ignore[union-attr] # pylint: disable=line-too-long
-        }
-        obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
-            pos = tuple(obs_poses[i, :3])
-            orn = tuple(obs_poses[i, 3:])
-            object_poses[obj_id] = Pose(position=pos, orientation=orn)
-
-        held_idx = int(self._current_obs["held_object_idx"][0])
-        attachments: dict[int, Pose] = {}
-        held_id = None
-        grasp_tf = self._current_obs["grasp_transform"]
-        if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
-            attachments[held_id] = Pose(
-                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
-            )
-
-        initial_state = KinematicState(robot_joints, object_poses, attachments)
-        initial_state.set_pybullet(self.env.robot)
-
-        collision_ids = set(object_poses.keys())
-        plan = get_kinematic_plan_to_pick_object(
-            initial_state,
-            self.env.robot,
-            object_id,
-            surface_id,
-            collision_ids,
-            grasp_generator=self._grasp_poses(object_id),
-            grasp_generator_iters=5,
-            max_motion_planning_time=1.0,
-            max_smoothing_iters_per_step=1,
-        )
-
-        initial_state.set_pybullet(self.env.robot)
-        if held_idx >= 0:
-            self.env.held_object_id = held_id
-            self.env.grasp_transform = Pose(
-                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
-            )
-        else:
-            self.env.held_object_id = None
-            self.env.grasp_transform = None
-
-        return plan
-
-    def _grasp_poses(self, object_id: int) -> Iterator[Pose]:
-        """Generate grasp poses at the top of the object (in object frame).
-
-        Computes the grasp in world frame (directly above the AABB top)
-        and converts to object frame, so it works regardless of object
-        orientation.
-        """
-        assert self.env.robot is not None
-        aabb = p.getAABB(object_id, physicsClientId=self.env.physics_client_id)
-        obj_center_x = (float(aabb[0][0]) + float(aabb[1][0])) / 2
-        obj_center_y = (float(aabb[0][1]) + float(aabb[1][1])) / 2
-        aabb_top_z = float(aabb[1][2])
-
-        ee_pose = self.env.robot.get_end_effector_pose()
-        _, _, ee_yaw = p.getEulerFromQuaternion(ee_pose.orientation)
-
-        obj_pose = get_pose(object_id, self.env.physics_client_id)
-        inv_pos, inv_orn = p.invertTransform(obj_pose.position, obj_pose.orientation)
-        obj_pose_inv = Pose(position=inv_pos, orientation=inv_orn)
-
-        for z_rot in [ee_yaw, ee_yaw - np.pi / 2]:
-            world_grasp_orientation = p.getQuaternionFromEuler([np.pi, 0, z_rot])
-            world_grasp = Pose(
-                (obj_center_x, obj_center_y, aabb_top_z), world_grasp_orientation
-            )
-            yield multiply_poses(obj_pose_inv, world_grasp)
 
 
 class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
