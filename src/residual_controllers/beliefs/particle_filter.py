@@ -686,7 +686,6 @@ def add_pose_noise(pose: tuple[float, ...], pos_std: float, rot_std: float) -> S
     x, y, z, qx, qy, qz, qw = pose
     x += np.random.normal(0, pos_std)
     y += np.random.normal(0, pos_std)
-    z += np.random.normal(0, pos_std)
 
     qx += np.random.normal(0, rot_std)
     qy += np.random.normal(0, rot_std)
@@ -791,8 +790,12 @@ def compute_observation_confidence(
 
 
 def get_best_particle_state(belief: Belief) -> TabletopState:
-    """Return the particle with the highest weight."""
-    return belief.particles[int(np.argmax(belief.weights))]
+    """Return the particle with the highest weight, or a random one if
+    uniform."""
+    weights = belief.weights
+    if np.allclose(weights, weights[0]):
+        return belief.particles[int(np.random.randint(len(belief.particles)))]
+    return belief.particles[int(np.argmax(weights))]
 
 
 def compute_ego_pose_confidence(
