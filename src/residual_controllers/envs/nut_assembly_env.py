@@ -8,7 +8,7 @@ from pathlib import Path
 import gymnasium
 import numpy as np
 import pybullet as p
-from pybullet_helpers.geometry import Pose, get_pose, set_pose
+from pybullet_helpers.geometry import Pose, get_pose, multiply_poses, set_pose
 from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 
@@ -274,6 +274,41 @@ class NutAssemblyEnv(TabletopBaseEnv):
         else:
             self._held_object_id = None
             self._grasp_transform = None
+
+    def _update_held_object_pose(self) -> None:
+        """Move the held nut to the desired EE-relative pose, then push it out
+        of any penetrations with the peg and table so the nut slides along
+        surfaces rather than passing through them."""
+        assert self._held_object_id is not None
+        assert self._grasp_transform is not None
+
+        ee_pose = self.robot.get_end_effector_pose()
+        desired_pose = multiply_poses(ee_pose, self._grasp_transform)
+        set_pose(self._held_object_id, desired_pose, self.physics_client_id)
+
+        p.performCollisionDetection(physicsClientId=self.physics_client_id)
+        correction = np.zeros(3)
+        for other_id in (self._peg_id, self._table_id):
+            contacts = p.getContactPoints(
+                self._held_object_id,
+                other_id,
+                physicsClientId=self.physics_client_id,
+            )
+            for contact in contacts or []:
+                depth = float(contact[8])  # negative = penetrating
+                if depth < 0:
+                    # contact[7] is the contact normal on bodyB pointing toward bodyA
+                    normal = np.array(contact[7], dtype=float)
+                    correction += -depth * normal
+
+        if np.any(correction != 0):
+            resolved_pos = np.array(desired_pose.position) + correction
+            resolved_pose = Pose(
+                position=tuple(resolved_pos), orientation=desired_pose.orientation
+            )
+            set_pose(self._held_object_id, resolved_pose, self.physics_client_id)
+            # Keep grasp transform consistent with the displaced nut position
+            self._grasp_transform = multiply_poses(ee_pose.invert(), resolved_pose)
 
     def _is_assembled(self) -> bool:
         """Nut is not held and rests on the table centered around the peg."""
