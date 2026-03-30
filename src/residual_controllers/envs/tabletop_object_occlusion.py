@@ -3,21 +3,22 @@ must pour milk into a cup."""
 
 from __future__ import annotations
 
-import os
-import ssl
 from dataclasses import dataclass
 
 import gymnasium
 import numpy as np
-import objaverse
 import pybullet as p
-import trimesh
 from pybullet_helpers.geometry import Pose, get_pose, set_pose
 from pybullet_helpers.inverse_kinematics import check_body_collisions
 from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 from tomsgeoms2d.structs import Circle
 
+from residual_controllers.envs.objaverse_utils import (
+    get_resting_z,
+    load_objaverse_object,
+    setup_ssl_context,
+)
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 
 _CEREAL_BOX_UID = "18501d8c14144a9492b50cb4f99fb6eb"
@@ -54,67 +55,6 @@ class TabletopObjectOcclusionEnvState:
     grasp_transform: Pose | None
 
 
-def _setup_ssl_context() -> None:
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    ssl._create_default_https_context = (  # pylint: disable=protected-access
-        lambda *args, **kwargs: ssl_context
-    )
-
-
-def _convert_glb_to_obj(glb_path: str) -> str:
-    obj_path = glb_path.replace(".glb", ".obj")
-    if os.path.exists(obj_path):
-        return obj_path
-    mesh = trimesh.load(glb_path)
-    if hasattr(mesh, "geometry"):
-        if len(mesh.geometry) > 0:
-            mesh = list(mesh.geometry.values())[0]
-        else:
-            raise ValueError(f"No geometry found in {glb_path}")
-    assert isinstance(mesh, trimesh.Trimesh)
-    mesh.export(obj_path)
-    return obj_path
-
-
-def _get_resting_z(obj_id: int, placed_z: float, physics_client_id: int) -> float:
-    """Return the world z so the object's bottom rests exactly on the table
-    (z=0)."""
-    aabb = p.getAABB(obj_id, physicsClientId=physics_client_id)
-    local_min_z = float(aabb[0][2]) - placed_z
-    return -local_min_z
-
-
-def _load_objaverse_object(
-    uid: str,
-    scale: float,
-    mass: float,
-    physics_client_id: int,
-) -> int:
-    downloaded = objaverse.load_objects(uids=[uid], download_processes=1)
-    glb_path = downloaded[uid]
-    obj_path = _convert_glb_to_obj(glb_path)
-    col_id = p.createCollisionShape(
-        shapeType=p.GEOM_MESH,
-        fileName=obj_path,
-        meshScale=[scale, scale, scale],
-        physicsClientId=physics_client_id,
-    )
-    vis_id = p.createVisualShape(
-        shapeType=p.GEOM_MESH,
-        fileName=obj_path,
-        meshScale=[scale, scale, scale],
-        physicsClientId=physics_client_id,
-    )
-    return p.createMultiBody(
-        baseMass=mass,
-        baseCollisionShapeIndex=col_id,
-        baseVisualShapeIndex=vis_id,
-        physicsClientId=physics_client_id,
-    )
-
-
 class TabletopObjectOcclusionEnv(TabletopBaseEnv):
     """Tabletop task where the milk carton is fully occluded from the wrist
     camera by a large cereal box, and the robot must pour milk into a cup."""
@@ -144,9 +84,9 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
         )
 
     def _setup_scene(self) -> None:
-        _setup_ssl_context()
+        setup_ssl_context()
 
-        self._cereal_box_id = _load_objaverse_object(
+        self._cereal_box_id = load_objaverse_object(
             uid=_CEREAL_BOX_UID,
             scale=_CEREAL_BOX_SCALE,
             mass=0.3,
@@ -157,11 +97,11 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
             Pose(position=(-10.0, 0.0, 0.0)),
             self.physics_client_id,
         )
-        self._cereal_box_z = _get_resting_z(
+        self._cereal_box_z = get_resting_z(
             self._cereal_box_id, 0.0, self.physics_client_id
         )
 
-        self._milk_carton_id = _load_objaverse_object(
+        self._milk_carton_id = load_objaverse_object(
             uid=_MILK_CARTON_UID,
             scale=_MILK_CARTON_SCALE,
             mass=0.5,
@@ -173,11 +113,11 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
             Pose(position=(-10.0, 1.0, 0.0), orientation=_milk_tipped_quat),
             self.physics_client_id,
         )
-        self._milk_carton_z_tipped = _get_resting_z(
+        self._milk_carton_z_tipped = get_resting_z(
             self._milk_carton_id, 0.0, self.physics_client_id
         )
 
-        self._cup_id = _load_objaverse_object(
+        self._cup_id = load_objaverse_object(
             uid=_CUP_UID,
             scale=_CUP_SCALE,
             mass=0.1,
@@ -188,7 +128,7 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
             Pose(position=(-10.0, 2.0, 0.0)),
             self.physics_client_id,
         )
-        self._cup_z = _get_resting_z(self._cup_id, 0.0, self.physics_client_id)
+        self._cup_z = get_resting_z(self._cup_id, 0.0, self.physics_client_id)
 
         self._object_ids = [
             self._cereal_box_id,

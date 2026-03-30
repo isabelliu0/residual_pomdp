@@ -67,10 +67,10 @@ class TabletopBaseEnv(gym.Env, ABC):
         if gui:
             self.physics_client_id = create_gui_connection()
             p.resetDebugVisualizerCamera(
-                cameraDistance=1.5,
-                cameraYaw=50,
-                cameraPitch=-35,
-                cameraTargetPosition=[0.5, 0.0, 0.0],
+                cameraDistance=0.9,
+                cameraYaw=90,
+                cameraPitch=-25,
+                cameraTargetPosition=[0.5, 0.0, 0.15],
                 physicsClientId=self.physics_client_id,
             )
         else:
@@ -418,10 +418,10 @@ class TabletopBaseEnv(gym.Env, ABC):
         if self.render_mode == "rgb_array_external":
             return capture_image(
                 self.physics_client_id,
-                camera_distance=1.5,
-                camera_yaw=50,
-                camera_pitch=-35,
-                camera_target=(0.5, 0.0, 0.0),
+                camera_distance=0.9,
+                camera_yaw=90,
+                camera_pitch=-25,
+                camera_target=(0.5, 0.0, 0.15),
                 image_width=640,
                 image_height=480,
             )
