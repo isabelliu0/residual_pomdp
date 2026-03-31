@@ -7,15 +7,28 @@ import pickle
 from pathlib import Path
 
 from residual_controllers.benchmarks import TabletopViewOcclusionTAMPSystem
+from residual_controllers.benchmarks.nut_assembly_system import NutAssemblyTAMPSystem
 from residual_controllers.operating_region.data_collect import collect_episode
+
+_ENV_DATA_DIRS: dict[str, str] = {
+    "tabletop_view_occlusion": "data/tabletop_view_occlusion",
+    "tabletop_object_occlusion": "data/tabletop_object_occlusion",
+    "nut_assembly": "data/nut_assembly",
+}
 
 
 def main() -> None:
     """Collect SubsequenceRecords data."""
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--env",
+        type=str,
+        default="tabletop_view_occlusion",
+        choices=list(_ENV_DATA_DIRS),
+        help="Environment to collect data from",
+    )
     parser.add_argument("--num-episodes", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-objects", type=int, default=1)
     parser.add_argument(
         "--nbv-step-counts",
         type=int,
@@ -26,12 +39,14 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default="data/subsequence_records.pkl",
+        default=None,
+        help="Output path",
     )
     parser.add_argument("--gui", action="store_true")
     args = parser.parse_args()
 
-    output_path = Path(args.output)
+    env_dir = _ENV_DATA_DIRS[args.env]
+    output_path = Path(args.output or f"{env_dir}/subsequence_records.pkl")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     nbv_step_counts = tuple(args.nbv_step_counts)
@@ -40,9 +55,10 @@ def main() -> None:
     for ep in range(args.num_episodes):
         seed = args.seed + ep
         print(f"\n=== Episode {ep + 1}/{args.num_episodes} (seed={seed}) ===")
-        system = TabletopViewOcclusionTAMPSystem(
-            seed=seed, gui=args.gui, num_objects=args.num_objects
-        )
+        if args.env == "nut_assembly":
+            system = NutAssemblyTAMPSystem(seed=seed, gui=args.gui)
+        else:
+            system = TabletopViewOcclusionTAMPSystem(seed=seed, gui=args.gui)
         try:
             records = collect_episode(
                 system, seed=seed, nbv_step_counts=nbv_step_counts

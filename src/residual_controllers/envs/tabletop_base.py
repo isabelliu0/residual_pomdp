@@ -170,6 +170,11 @@ class TabletopBaseEnv(gym.Env, ABC):
         """Return PyBullet IDs for collision checking during motion
         planning."""
 
+    @property
+    def object_labels(self) -> list[str]:
+        """Return the list of object labels in the scene."""
+        return list(self._get_label_to_id().keys())
+
     def _get_info(self) -> dict:
         return {}
 

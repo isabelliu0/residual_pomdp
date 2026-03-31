@@ -152,12 +152,22 @@ class NutAssemblyEnv(TabletopBaseEnv):
             }
         )
 
+    def _sample_nut_pose(self) -> Pose:
+        peg_cx, peg_cy = self._peg_center[0], self._peg_center[1]
+        r = float(np.random.uniform(0.1, 0.25))
+        if np.random.random() < 0.5:
+            theta = float(np.random.uniform(np.pi / 3, np.pi / 2))
+        else:
+            theta = float(np.random.uniform(-np.pi / 2, -np.pi / 3))
+        x = peg_cx + r * np.cos(theta)
+        y = peg_cy + r * np.sin(theta)
+        return Pose(position=(x, y, _NUT_HALF_HEIGHT), orientation=(0, 0, 0, 1))
+
     def _reset_scene(self) -> None:
-        nut_x = float(np.random.uniform(0.45, 0.55))
-        nut_y = float(np.random.uniform(0.10, 0.20))
+        nut_pose = self._sample_nut_pose()
         set_pose(
             self._nut_id,
-            Pose(position=(nut_x, nut_y, _NUT_HALF_HEIGHT), orientation=(0, 0, 0, 1)),
+            nut_pose,
             self.physics_client_id,
         )
         set_pose(

@@ -273,11 +273,6 @@ class TabletopViewOcclusionEnv(TabletopBaseEnv):
     def scene(self) -> TabletopViewOcclusionScene | None:
         return self._scene
 
-    @property
-    def object_labels(self) -> list[str]:
-        """Get the list of object labels in the scene, ordered by their IDs."""
-        return self._object_labels
-
     def get_state(self) -> TabletopViewOcclusionEnvState:
         """Get the current state of the environment."""
         assert self.robot is not None
