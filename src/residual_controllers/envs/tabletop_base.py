@@ -102,6 +102,7 @@ class TabletopBaseEnv(gym.Env, ABC):
         self.belief: Belief | None = None
         self._held_object_id: int | None = None
         self._grasp_transform: Pose | None = None
+        self._gripper_finger_width: float | None = None
         self._camera_frame_ids: set[int] = set()
 
         self.action_space = gym.spaces.Box(
@@ -195,6 +196,7 @@ class TabletopBaseEnv(gym.Env, ABC):
 
         self._held_object_id = None
         self._grasp_transform = None
+        self._gripper_finger_width = None
 
         self._reset_scene()
 
@@ -213,11 +215,14 @@ class TabletopBaseEnv(gym.Env, ABC):
         joint_delta = action[:7]
         gripper_action = action[7] if len(action) > 7 else 0.0
 
-        if gripper_action > 0.5 and self._held_object_id is not None:
+        should_open = gripper_action > 0.5
+        should_close = gripper_action < -0.5
+
+        if should_open and self._held_object_id is not None:
             self._held_object_id = None
             self._grasp_transform = None
 
-        if gripper_action < -0.5 and self._held_object_id is None:
+        if should_close and self._held_object_id is None:
             self._try_grasp()
 
         current_joints = self.robot.get_joint_positions()
@@ -227,7 +232,19 @@ class TabletopBaseEnv(gym.Env, ABC):
             self.robot.joint_lower_limits[:7],
             self.robot.joint_upper_limits[:7],
         )
-        self.robot.set_joints(list(new_joints) + list(current_joints[7:]))
+        if should_open:
+            self._gripper_finger_width = None
+            finger_joints = self.robot.finger_state_to_joints(
+                self.robot.open_fingers_state
+            )
+        elif should_close:
+            width = self._gripper_finger_width
+            finger_joints = self.robot.finger_state_to_joints(
+                width if width is not None else self.robot.closed_fingers_state
+            )
+        else:
+            finger_joints = list(current_joints[7:])
+        self.robot.set_joints(list(new_joints) + finger_joints)
 
         if self._held_object_id is not None and self._grasp_transform is not None:
             self._update_held_object_pose()
@@ -368,6 +385,16 @@ class TabletopBaseEnv(gym.Env, ABC):
         """Squared distance threshold for AABB-based grasp detection."""
         return 1e-4
 
+    def _get_finger_axis_world(self) -> np.ndarray:
+        """World-frame unit vector along which the gripper fingers open/close.
+
+        For the Panda, both finger joints slide along the y-axis of the
+        panda_hand link frame (finger 1 in +y, finger 2 in -y).
+        """
+        hand_pose = self._get_hand_pose()
+        rot = np.array(p.getMatrixFromQuaternion(hand_pose.orientation)).reshape(3, 3)
+        return rot[:, 1]  # y-axis column of panda_hand frame
+
     def _try_grasp(self) -> None:
         ee_pose = self.robot.get_end_effector_pose()
         ee_pos = np.array(ee_pose.position)
@@ -377,11 +404,34 @@ class TabletopBaseEnv(gym.Env, ABC):
             )
             nearest = np.clip(ee_pos, aabb_min, aabb_max)
             dist_sq = float(np.sum((ee_pos - nearest) ** 2))
-            if dist_sq < self._get_grasp_aabb_threshold(obj_id):
-                obj_pose = get_pose(obj_id, self.physics_client_id)
-                self._held_object_id = obj_id
-                self._grasp_transform = multiply_poses(ee_pose.invert(), obj_pose)
-                break
+            if dist_sq >= self._get_grasp_aabb_threshold(obj_id):
+                continue
+
+            obj_pose = get_pose(obj_id, self.physics_client_id)
+
+            finger_axis = self._get_finger_axis_world()
+            half_extents = (np.array(aabb_max) - np.array(aabb_min)) / 2
+            half_width = float(np.abs(finger_axis) @ half_extents)
+
+            hand_pose = self._get_hand_pose()
+            hand_center = np.array(hand_pose.position)
+            obj_center = np.array(obj_pose.position)
+            lateral_offset = float(finger_axis @ (obj_center - hand_center))
+
+            centered_pos = obj_center - lateral_offset * finger_axis
+            centered_pose = Pose(
+                position=tuple(centered_pos),
+                orientation=obj_pose.orientation,
+            )
+            set_pose(obj_id, centered_pose, self.physics_client_id)
+
+            self._gripper_finger_width = float(
+                np.clip(half_width, 0.0, self.robot.open_fingers_state)
+            )
+
+            self._held_object_id = obj_id
+            self._grasp_transform = multiply_poses(ee_pose.invert(), centered_pose)
+            break
 
     def _update_held_object_pose(self) -> None:
         """Update the pose of the held object to follow the robot's end

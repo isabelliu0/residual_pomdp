@@ -6,12 +6,15 @@ import time
 
 import numpy as np
 import pybullet as p
-from pybullet_helpers.geometry import Pose, multiply_poses
+from pybullet_helpers.geometry import Pose, get_pose, multiply_poses
 
+from residual_controllers.beliefs.structs import TabletopState
+from residual_controllers.benchmarks.nut_assembly_system import NutAssemblyTAMPSystem
 from residual_controllers.envs.nut_assembly_env import (
     NutAssemblyEnv,
     NutAssemblyEnvState,
 )
+from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
 
 _PEG_HEIGHT = 0.1
 
@@ -127,3 +130,88 @@ def test_nut_peg_surface_interaction():
     step_toward((peg_cx, peg_cy, rim_z), n_steps=20)
 
     env.close()
+
+
+def test_orp_calibration():
+    """ORP core assumption: lower peg belief sigma -> higher assembly success rate."""
+
+    def _inject_peg_sigma(
+        system: NutAssemblyTAMPSystem, peg_sigma: float, rng: np.random.Generator
+    ) -> None:
+        belief = system.env.belief
+        if belief is None:
+            return
+        peg_gt = get_pose(
+            system.env._peg_id, system.env.physics_client_id  # type: ignore[attr-defined]  # pylint: disable=protected-access
+        )
+        nut_gt = get_pose(
+            system.env._nut_id, system.env.physics_client_id  # type: ignore[attr-defined]  # pylint: disable=protected-access
+        )
+        new_particles = []
+        for particle in belief.particles:
+            poses = dict(particle.object_poses)
+            poses["PEG"] = (
+                float(peg_gt.position[0]) + float(rng.normal(0, peg_sigma)),
+                float(peg_gt.position[1]) + float(rng.normal(0, peg_sigma)),
+                float(peg_gt.position[2]),
+                float(peg_gt.orientation[0]),
+                float(peg_gt.orientation[1]),
+                float(peg_gt.orientation[2]),
+                float(peg_gt.orientation[3]),
+            )
+            poses["NUT"] = (
+                float(nut_gt.position[0]),
+                float(nut_gt.position[1]),
+                float(nut_gt.position[2]),
+                float(nut_gt.orientation[0]),
+                float(nut_gt.orientation[1]),
+                float(nut_gt.orientation[2]),
+                float(nut_gt.orientation[3]),
+            )
+            new_particles.append(
+                TabletopState(
+                    joint_positions=particle.joint_positions,
+                    gripper_open=particle.gripper_open,
+                    object_poses=poses,
+                )
+            )
+        n = len(new_particles)
+        belief.particles = new_particles
+        belief.weights = np.ones(n) / n
+
+    def _run_trial(seed: int, peg_sigma: float) -> bool:
+        system = NutAssemblyTAMPSystem(seed=seed, gui=False)
+        rng = np.random.default_rng(seed + 999)
+        try:
+            system.reset(seed=seed)
+            symbolic_plan = system.get_symbolic_plan()
+            if symbolic_plan is None:
+                return False
+            ignored = system.get_oig_ignored_objects()
+            subsequences = build_object_interaction_graph(symbolic_plan, ignored)
+            terminated = False
+            for subseq_actions, _ in subsequences:
+                goal_add, _ = system.get_subsequence_effects(subseq_actions)
+                op = "+".join(a.strip("() ").split()[0] for a in subseq_actions)
+                if "assemble" in op:
+                    _inject_peg_sigma(system, peg_sigma, rng)
+                plan = system.plan_for_goal(goal_add, seed=seed)
+                if plan is None:
+                    return False
+                for action in plan.actions:
+                    _, _, terminated, _, _ = system.env.step(action)
+                    if terminated:
+                        break
+                if terminated:
+                    break
+            return terminated
+        finally:
+            system.close()
+
+    N_TRIALS = 3
+
+    tight_successes = sum(_run_trial(seed=s, peg_sigma=1e-6) for s in range(N_TRIALS))
+    loose_successes = sum(_run_trial(seed=s, peg_sigma=0.05) for s in range(N_TRIALS))
+
+    print(f"\nTight sigma (0.001 mm): {tight_successes}/{N_TRIALS} successes")
+    print(f"Loose sigma (50.0 mm): {loose_successes}/{N_TRIALS} successes")
