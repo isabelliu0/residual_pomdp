@@ -84,6 +84,12 @@ class BeliefConfig:
     never_seen_decay: float = 0.9
     confidence_known_threshold: float = 0.6
 
+    # Detection noise (simulates sensor measurement uncertainty)
+    # Scales linearly with camera-to-object distance; detection_pos_std is the
+    # noise std at detection_distance_ref metres.
+    detection_pos_std: float = 0.01
+    detection_distance_ref: float = 0.5
+
     # Pose injection from detections
     pose_injection_pos_std: float = 0.01
     pose_injection_rot_std: float = 0.0

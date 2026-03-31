@@ -18,7 +18,7 @@ _ASSETS_DIR = Path(__file__).parent / "assets"
 _NUT_URDF_PATH = _ASSETS_DIR / "round-nut.urdf"
 _TEXTURE_PATH = _ASSETS_DIR / "steel-scratched.png"
 
-_PEG_RADIUS = 0.01  # nut inner radius ~0.0156m -> ~5.6mm clearance each side
+_PEG_RADIUS = 0.015  # nut inner radius ~0.0156m -> ~0.6mm clearance each side
 _PEG_HEIGHT = 0.1
 _NUT_HALF_HEIGHT = 0.005
 

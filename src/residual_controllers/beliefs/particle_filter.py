@@ -135,6 +135,9 @@ def create_initial_belief(
         camera_image.segmentation,
         label_to_id,
         env.physics_client_id,
+        detection_pos_std=config.detection_pos_std,
+        detection_distance_ref=config.detection_distance_ref,
+        camera_pos=camera_pose[0],
     )
 
     known_objects: set[str] = set(detections.keys())
@@ -290,13 +293,15 @@ def update_belief(
     excluded_aabbs: list[tuple[float, float, float, float]] | None = None,
 ) -> Belief:
     """Update belief from new camera observation."""
+    config = config or BeliefConfig()
     detections = detect_objects_from_segmentation(
         camera_image.segmentation,
         label_to_id,
         physics_client_id,
+        detection_pos_std=config.detection_pos_std,
+        detection_distance_ref=config.detection_distance_ref,
+        camera_pos=camera_pose[0],
     )
-
-    config = config or BeliefConfig()
     detected_objects = set(detections.keys())
     occluded_objects: set[str] = set()
     visibility_status: dict[str, str] = {}
@@ -518,14 +523,15 @@ def compute_belief_diagnostics(
     config: BeliefConfig | None = None,
 ) -> BeliefUpdateDiagnostics:
     """Compute diagnostics for belief update without modifying belief."""
+    diagnostics = BeliefUpdateDiagnostics()
+    config = config or BeliefConfig()
     detections = detect_objects_from_segmentation(
         camera_image.segmentation,
         label_to_id,
         physics_client_id,
+        detection_pos_std=config.detection_pos_std,
+        detection_distance_ref=config.detection_distance_ref,
     )
-
-    diagnostics = BeliefUpdateDiagnostics()
-    config = config or BeliefConfig()
 
     weights = belief.weights.astype(np.float64)
     weights = weights / weights.sum()
@@ -606,18 +612,6 @@ def compute_belief_diagnostics(
     )
 
     return diagnostics
-
-
-def _get_last_known_pose(belief: Belief, label: str) -> tuple[float, ...] | None:
-    """Get last known pose for an object from particles (weighted mean)."""
-    poses = [
-        particle.object_poses[label]
-        for particle in belief.particles
-        if label in particle.object_poses
-    ]
-    if not poses:
-        return None
-    return average_poses(poses, belief.weights / belief.weights.sum())
 
 
 def _is_position_visible(

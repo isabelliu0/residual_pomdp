@@ -225,6 +225,12 @@ class TabletopBaseEnv(gym.Env, ABC):
 
         p.stepSimulation(physicsClientId=self.physics_client_id)
 
+        joints = list(self.robot.get_joint_positions())
+        avg = (joints[7] + joints[8]) / 2
+        joints[7] = avg
+        joints[8] = avg
+        self.robot.set_joints(joints)
+
         if self.gui:
             self._update_camera_visualization()
 
