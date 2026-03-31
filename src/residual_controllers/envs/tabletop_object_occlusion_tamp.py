@@ -126,7 +126,7 @@ class TabletopPourAbstractor(TabletopBaseAbstractor):
             held_idx = int(obs["held_object_idx"][0])
             held_id = None
             if held_idx >= 0:
-                held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+                held_id = self.env.scene.object_ids[held_idx]
 
             milk_id = self._pybullet_ids[self._milk_obj]
             cup_id = self._pybullet_ids[self._cup_obj]
@@ -234,7 +234,7 @@ class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
         _, milk_obj, cup_obj = self.objects
         milk_id = self.abstractor.get_pybullet_id(milk_obj)
         cup_id = self.abstractor.get_pybullet_id(cup_obj)
-        table_id = self.env.scene.table_id  # type: ignore[union-attr]
+        table_id = self.env.scene.table_id
 
         robot_joints = list(self._current_obs["joint_positions"])
         if len(robot_joints) >= 9:
@@ -246,7 +246,7 @@ class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
             table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
         obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        for i, obj_id in enumerate(self.env.scene.object_ids):
             pos = tuple(obs_poses[i, :3])
             orn = tuple(obs_poses[i, 3:])
             object_poses[obj_id] = Pose(position=pos, orientation=orn)
@@ -256,7 +256,7 @@ class PourGroundController(GroundParameterizedController[dict, np.ndarray]):
         held_id = None
         grasp_tf = self._current_obs["grasp_transform"]
         if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
                 position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
             )

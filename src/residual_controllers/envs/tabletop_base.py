@@ -175,6 +175,10 @@ class TabletopBaseEnv(gym.Env, ABC):
         """Return the list of object labels in the scene."""
         return list(self._get_label_to_id().keys())
 
+    def _update_belief_from_contact(self) -> None:
+        """Override to collapse belief particles based on contact/fit
+        events."""
+
     def _get_info(self) -> dict:
         return {}
 
@@ -269,6 +273,7 @@ class TabletopBaseEnv(gym.Env, ABC):
                 table_id=self._table_id,
                 excluded_aabbs=self._get_excluded_aabbs(),
             )
+            self._update_belief_from_contact()
 
         obs = self.get_observation()
         terminated = self._get_terminated()

@@ -242,10 +242,10 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
             robot_joints[8] = finger_avg
 
         object_poses: dict[int, Pose] = {
-            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),  # type: ignore[union-attr] # pylint: disable=line-too-long
+            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
         obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        for i, obj_id in enumerate(self.env.scene.object_ids):
             pos = tuple(obs_poses[i, :3])
             orn = tuple(obs_poses[i, 3:])
             object_poses[obj_id] = Pose(position=pos, orientation=orn)
@@ -255,7 +255,7 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
         held_id = None
         grasp_tf = self._current_obs["grasp_transform"]
         if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
                 position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
             )
@@ -268,7 +268,7 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
             position=(area_x, area_y, place_z), orientation=(0, 0, 0, 1)
         )
 
-        table_pose = get_pose(self.env.scene.table_id, self.env.physics_client_id)  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        table_pose = get_pose(self.env.scene.table_id, self.env.physics_client_id)
         relative_placement = multiply_poses(table_pose.invert(), world_obj_pose)
 
         def placement_gen():
@@ -279,7 +279,7 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
             initial_state,
             self.env.robot,
             object_id,
-            self.env.scene.table_id,  # type: ignore[union-attr]
+            self.env.scene.table_id,
             collision_ids,
             placement_generator=placement_gen(),  # type: ignore[no-untyped-call]
             placement_generator_iters=1,
