@@ -100,15 +100,15 @@ def main() -> None:
         print(
             f"  {op}: {len(op_records)} records, "
             f"{successes} successes ({100 * successes // len(op_records)}%), "
-            f"sigma=[{sigma_min:.4f}, {sigma_max:.4f}], "
-            f"P(success|sigma=0)={p_at_zero:.3f}, "
-            f"P(success|sigma=max)={p_at_max:.3f}, "
-            f"sigma_threshold(p>={args.sigma_threshold})={sigma_thresh:.4f}"
+            f"sigma=[{sigma_min:.8f}, {sigma_max:.8f}], "
+            f"P(success|sigma=0)={p_at_zero:.8f}, "
+            f"P(success|sigma=max)={p_at_max:.8f}, "
+            f"sigma_threshold(p>={args.sigma_threshold})={sigma_thresh:.8f}"
         )
         if sigma_thresh == 0.0 and p_at_zero < args.sigma_threshold:
             print(
                 f"    WARNING: P(success) never reaches {args.sigma_threshold} "
-                f"(max={p_at_zero:.3f} at sigma=0). "
+                f"(max={p_at_zero:.8f} at sigma=0). "
                 f"Consider lowering --sigma-threshold."
             )
 

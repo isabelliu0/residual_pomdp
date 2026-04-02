@@ -169,8 +169,8 @@ class TampNbvApproach(BaseApproach[Any, Any]):
             )
             print(
                 f"[NBV] Predictor: op={operator_name}, "
-                f"relevant_sigma={features.relevant_sigma:.4f}, "
-                f"sigma_threshold={sigma_threshold:.4f}"
+                f"relevant_sigma={features.relevant_sigma:.8f}, "
+                f"sigma_threshold={sigma_threshold:.8f}"
             )
             return features.relevant_sigma > sigma_threshold
 

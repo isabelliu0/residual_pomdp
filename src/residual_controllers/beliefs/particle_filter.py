@@ -10,7 +10,10 @@ import numpy as np
 import pybullet as p
 
 from residual_controllers.beliefs.occupancy_grid import LogOddsOccupancyGrid
-from residual_controllers.beliefs.perception import detect_objects_from_segmentation
+from residual_controllers.beliefs.perception import (
+    detect_objects_from_pointcloud_pca,
+    detect_objects_from_segmentation,
+)
 from residual_controllers.beliefs.structs import (
     Belief,
     BeliefConfig,
@@ -121,6 +124,30 @@ def _sample_on_table_pose(
     return (x, y, z, 0.0, 0.0, 0.0, 1.0)
 
 
+def _best_yaw_equivalent(
+    particle_pose: tuple[float, ...],
+    detected_pose: tuple[float, ...],
+    n_fold: int,
+) -> SE3Pose:
+    """Return the n-fold equivalent of detected_pose whose yaw is closest to
+    particle_pose."""
+    if n_fold <= 1:
+        return cast(SE3Pose, detected_pose)
+    x, y, z = detected_pose[0], detected_pose[1], detected_pose[2]
+    yaw_det = 2.0 * float(np.arctan2(detected_pose[5], detected_pose[6]))
+    yaw_p = 2.0 * float(np.arctan2(particle_pose[5], particle_pose[6]))
+    period = 2.0 * np.pi / n_fold
+    best_yaw = yaw_det
+    best_diff = abs(float((yaw_det - yaw_p + np.pi) % (2 * np.pi) - np.pi))
+    for k in range(1, n_fold):
+        yaw_k = yaw_det + k * period
+        diff = abs(float((yaw_k - yaw_p + np.pi) % (2 * np.pi) - np.pi))
+        if diff < best_diff:
+            best_diff = diff
+            best_yaw = yaw_k
+    return (x, y, z, 0.0, 0.0, float(np.sin(best_yaw / 2)), float(np.cos(best_yaw / 2)))
+
+
 def create_initial_belief(
     env,
     camera_image,
@@ -131,13 +158,14 @@ def create_initial_belief(
     config = config or BeliefConfig()
     camera_pose = env.get_camera_pose_se3()
     label_to_id = env.scene.label_to_id
-    detections = detect_objects_from_segmentation(
+    detections = detect_objects_from_pointcloud_pca(
         camera_image.segmentation,
+        camera_image.depth,
         label_to_id,
         env.physics_client_id,
-        detection_pos_std=config.detection_pos_std,
-        detection_distance_ref=config.detection_distance_ref,
-        camera_pos=camera_pose[0],
+        env.camera_intrinsics,
+        camera_pose,
+        pixel_noise_std=config.pixel_noise_std,
     )
 
     known_objects: set[str] = set(detections.keys())
@@ -294,13 +322,14 @@ def update_belief(
 ) -> Belief:
     """Update belief from new camera observation."""
     config = config or BeliefConfig()
-    detections = detect_objects_from_segmentation(
+    detections = detect_objects_from_pointcloud_pca(
         camera_image.segmentation,
+        camera_image.depth,
         label_to_id,
         physics_client_id,
-        detection_pos_std=config.detection_pos_std,
-        detection_distance_ref=config.detection_distance_ref,
-        camera_pos=camera_pose[0],
+        camera_intrinsics,
+        camera_pose,
+        pixel_noise_std=config.pixel_noise_std,
     )
     detected_objects = set(detections.keys())
     occluded_objects: set[str] = set()
@@ -384,9 +413,10 @@ def update_belief(
                     weight
                 )
                 alpha = float(np.clip(dist / reset_distance, min_alpha, 1.0))
-                new_object_poses[label] = blend_poses(
-                    particle_pose, detected_pose, alpha
+                equiv_pose = _best_yaw_equivalent(
+                    particle_pose, detected_pose, config.n_fold_symmetry
                 )
+                new_object_poses[label] = blend_poses(particle_pose, equiv_pose, alpha)
 
         for label in occluded_objects:
             likelihood *= config.occluded_likelihood

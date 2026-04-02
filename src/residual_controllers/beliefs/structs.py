@@ -84,17 +84,21 @@ class BeliefConfig:
     never_seen_decay: float = 0.9
     confidence_known_threshold: float = 0.6
 
-    # Detection noise (simulates sensor measurement uncertainty)
-    # Scales linearly with camera-to-object distance; detection_pos_std is the
-    # noise std at detection_distance_ref metres.
+    # Detection noise (simulates sensor measurement uncertainty).
     detection_pos_std: float = 0.01
     detection_distance_ref: float = 0.5
+    # Per-pixel noise std (pixels) for pointcloud PCA detection.
+    # On a small surface of 500 pixels, pixel_noise_std=150 gives ~6 px centroid std.
+    pixel_noise_std: float = 150.0
 
     # Pose injection from detections
     pose_injection_pos_std: float = 0.01
     pose_injection_rot_std: float = 0.0
     pose_injection_reset_distance: float = 0.1
     pose_injection_min_alpha: float = 0.1
+
+    # Rotational symmetry for orientation-aware pose blending.
+    n_fold_symmetry: int = 1
 
     # Ego-pose confidence
     ego_pose_confidence_threshold: float = 0.05

@@ -2,19 +2,77 @@
 
 from __future__ import annotations
 
+import os
 import time
 
+import imageio
 import numpy as np
 import pybullet as p
+from pybullet_helpers.camera import capture_image
 from pybullet_helpers.geometry import Pose, get_pose, multiply_poses
 
-from residual_controllers.beliefs.structs import TabletopState
+from residual_controllers.beliefs.perception import (
+    detect_objects_from_pointcloud_pca,
+    detect_objects_from_segmentation,
+    transform_point,
+)
+from residual_controllers.beliefs.structs import CameraIntrinsics, TabletopState
 from residual_controllers.benchmarks.nut_assembly_system import NutAssemblyTAMPSystem
 from residual_controllers.envs.nut_assembly_env import (
     NutAssemblyEnv,
     NutAssemblyEnvState,
 )
 from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
+
+
+def _unproject_mask_points(
+    segmentation: np.ndarray,
+    depth: np.ndarray,
+    obj_id: int,
+    camera_pose: tuple[tuple[float, ...], tuple[float, ...]],
+    intrinsics: CameraIntrinsics,
+) -> np.ndarray:
+    """Unproject all segmentation mask pixels for obj_id to world-frame 3D
+    points."""
+    mask = segmentation == obj_id
+    if not np.any(mask):
+        return np.empty((0, 3))
+    ys, xs = np.where(mask)
+    points = []
+    for y, x in zip(ys, xs):
+        d = float(depth[y, x])
+        if d <= 0:
+            continue
+        point_cam = intrinsics.unproject(float(x), float(y), d)
+        point_world = transform_point(point_cam, camera_pose)
+        points.append(point_world)
+    return np.array(points) if points else np.empty((0, 3))
+
+
+def _extract_top_face_points(
+    points_world: np.ndarray,
+    initial_top_fraction: float = 0.25,
+    inlier_distance: float = 0.005,
+) -> np.ndarray:
+    """Find top-face points by fitting a plane to the highest-Z cluster."""
+    if len(points_world) < 3:
+        return np.empty((0, 3))
+
+    z_threshold = np.percentile(points_world[:, 2], (1 - initial_top_fraction) * 100)
+    candidates = points_world[points_world[:, 2] >= z_threshold]
+
+    if len(candidates) < 3:
+        return candidates
+
+    centroid = candidates.mean(axis=0)
+    _, _, vh = np.linalg.svd(candidates - centroid, full_matrices=False)
+    normal = vh[-1]
+    if normal[2] < 0:
+        normal = -normal
+
+    distances = np.abs((points_world - centroid) @ normal)
+    return points_world[distances <= inlier_distance]
+
 
 _PEG_HEIGHT = 0.1
 
@@ -215,3 +273,128 @@ def test_orp_calibration():
 
     print(f"\nTight sigma (0.001 mm): {tight_successes}/{N_TRIALS} successes")
     print(f"Loose sigma (50.0 mm): {loose_successes}/{N_TRIALS} successes")
+
+
+def test_nut_assembly_pointcloud_pca_detection_vs_gt():
+    """Point-cloud PCA detection finds NUT and PEG with XY error < 5 cm.
+
+    Yaw is not checked: both objects are rotationally symmetric (round),
+    so PCA yaw is arbitrary.
+    """
+    env = NutAssemblyEnv(gui=False)
+    env.reset(seed=7)
+
+    camera_image = env.get_camera_image()
+    camera_pose = env.get_camera_pose_se3()
+    label_to_id = env._get_label_to_id()  # pylint: disable=protected-access
+    pcid = env.physics_client_id
+
+    gt_detections = detect_objects_from_segmentation(
+        camera_image.segmentation, label_to_id, pcid, detection_pos_std=0.0
+    )
+    pca_detections = detect_objects_from_pointcloud_pca(
+        camera_image.segmentation,
+        camera_image.depth,
+        label_to_id,
+        pcid,
+        env.camera_intrinsics,
+        camera_pose,
+        pixel_noise_std=150.0,
+    )
+
+    assert gt_detections, "GT method found nothing"
+    assert pca_detections, "PCA method found nothing"
+
+    for label, obj_id in label_to_id.items():
+        if label not in pca_detections:
+            continue
+        assert label in gt_detections, f"{label} detected by PCA but not visible to GT"
+
+        all_points = _unproject_mask_points(
+            camera_image.segmentation,
+            camera_image.depth,
+            obj_id,
+            camera_pose,
+            env.camera_intrinsics,
+        )
+        top_face = _extract_top_face_points(all_points)
+        effective_std = 150.0 / float(np.sqrt(max(1, len(top_face))))
+
+        gt_pose = gt_detections[label][0]
+        pca_pose = pca_detections[label][0]
+        gt_xy = np.array(gt_pose[:2])
+        pca_xy = np.array(pca_pose[:2])
+        xy_error = float(np.linalg.norm(gt_xy - pca_xy))
+        assert xy_error < 0.05, f"{label}: XY error {xy_error:.3f} m exceeds 5 cm"
+        print(
+            f"\n{label}: N_top_face={len(top_face)}, effective_std={effective_std:.2f} px"  # pylint: disable=line-too-long
+            f"  GT XY={gt_xy}, PCA XY={pca_xy}, XY err={xy_error:.3f} m"
+        )
+
+    env.close()
+
+
+def test_nut_assembly_top_face_pca_visualization():
+    """Visualize top-face 3D points used for PCA pose estimation in nut
+    assembly."""
+    env = NutAssemblyEnv(gui=False)
+    env.reset(seed=42)
+
+    camera_image = env.get_camera_image()
+    camera_pose = env.get_camera_pose_se3()
+    label_to_id = env._get_label_to_id()  # pylint: disable=protected-access
+    pcid = env.physics_client_id
+
+    os.makedirs("videos/perception_test", exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print("NUT ASSEMBLY TOP FACE PCA VISUALIZATION")
+    print(f"{'='*60}")
+
+    for label, obj_id in label_to_id.items():
+        all_points = _unproject_mask_points(
+            camera_image.segmentation,
+            camera_image.depth,
+            obj_id,
+            camera_pose,
+            env.camera_intrinsics,
+        )
+        if len(all_points) == 0:
+            print(f"\n{label}: not visible")
+            continue
+
+        top_face = _extract_top_face_points(all_points)
+        gt_pos, _ = p.getBasePositionAndOrientation(obj_id, physicsClientId=pcid)
+
+        print(f"\n{label} (id={obj_id}):")
+        print(f"  mask points: {len(all_points)}, top-face inliers: {len(top_face)}")
+        print(f"  GT pos: ({gt_pos[0]:.3f}, {gt_pos[1]:.3f}, {gt_pos[2]:.3f})")
+
+        if len(top_face) >= 3:
+            centroid_xy = top_face[:, :2].mean(axis=0)
+            print(f"  centroid XY: ({centroid_xy[0]:.3f}, {centroid_xy[1]:.3f})")
+            p.addUserDebugPoints(
+                top_face.tolist(),
+                [[0.0, 0.0, 0.0]] * len(top_face),
+                pointSize=5,
+                physicsClientId=pcid,
+            )
+
+    imageio.imwrite(
+        "videos/perception_test/top_face_pca_wrist_nut.png", camera_image.rgb
+    )
+    frame = capture_image(
+        pcid,
+        camera_distance=0.9,
+        camera_yaw=50,
+        camera_pitch=-35,
+        camera_target=(0.5, 0.0, 0.0),
+        image_width=640,
+        image_height=480,
+    )
+    imageio.imwrite("videos/perception_test/top_face_pca_external_nut.png", frame)
+    print("\nSaved: videos/perception_test/top_face_pca_wrist_nut.png")
+    print("Saved: videos/perception_test/top_face_pca_external_nut.png")
+    print(f"{'='*60}\n")
+    # input("Press Enter to close...")
+    env.close()

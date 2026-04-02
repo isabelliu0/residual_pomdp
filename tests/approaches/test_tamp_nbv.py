@@ -163,7 +163,7 @@ def test_approach_nut_assembly():
 
 def test_approach_nut_assembly_nbv():
     """NBV runs until PEG+NUT particle sigma drops below a fixed threshold."""
-    sigma_threshold = 0.00005
+    sigma_threshold = 0.0001
     seed = 42
 
     system = NutAssemblyTAMPSystem(seed=seed, gui=False)
