@@ -98,9 +98,9 @@ class TabletopBaseAbstractor(BeliefAbstractor[dict]):
         self._movable_objs = []
         self._pybullet_ids = {
             self._robot_obj: self.env.robot.robot_id,
-            self._table_obj: self.env.scene.table_id,  # type: ignore[union-attr]
+            self._table_obj: self.env.scene.table_id,
         }
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        for i, obj_id in enumerate(self.env.scene.object_ids):
             label = chr(65 + i)
             obj = Object(label, self.types.obj)
             self._movable_objs.append(obj)
@@ -165,7 +165,7 @@ class TabletopBaseAbstractor(BeliefAbstractor[dict]):
         held_idx = int(obs["held_object_idx"][0])
         held_id = None
         if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            held_id = self.env.scene.object_ids[held_idx]
         if held_id is None:
             atoms.add(GroundAtom(self.predicates.gripper_empty, [self._robot_obj]))
         for obj in self._movable_objs:
@@ -189,7 +189,7 @@ class TabletopBaseAbstractor(BeliefAbstractor[dict]):
         assert self.env.scene is not None
         union: set[GroundAtom] = set()
         for particle in particles:
-            for label, sim_obj_id in self.env.scene.label_to_id.items():  # type: ignore[union-attr]    # pylint: disable=line-too-long
+            for label, sim_obj_id in self.env.scene.label_to_id.items():
                 pose = particle.object_poses.get(label)
                 if pose is not None:
                     set_pose(
@@ -284,10 +284,10 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
             robot_joints[8] = finger_avg
 
         object_poses: dict[int, Pose] = {
-            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),  # type: ignore[union-attr] # pylint: disable=line-too-long
+            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
         obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        for i, obj_id in enumerate(self.env.scene.object_ids):
             pos = tuple(obs_poses[i, :3])
             orn = tuple(obs_poses[i, 3:])
             object_poses[obj_id] = Pose(position=pos, orientation=orn)
@@ -297,7 +297,7 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
         held_id = None
         grasp_tf = self._current_obs["grasp_transform"]
         if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
                 position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
             )
@@ -386,10 +386,10 @@ class ObjPickGroundController(PickGroundController):
             robot_joints[8] = finger_avg
 
         object_poses: dict[int, Pose] = {
-            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),  # type: ignore[union-attr]  # pylint: disable=line-too-long
+            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
         obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        for i, obj_id in enumerate(self.env.scene.object_ids):
             pos = tuple(obs_poses[i, :3])
             orn = tuple(obs_poses[i, 3:])
             object_poses[obj_id] = Pose(position=pos, orientation=orn)
@@ -399,7 +399,7 @@ class ObjPickGroundController(PickGroundController):
         held_id = None
         grasp_tf = self._current_obs["grasp_transform"]
         if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
                 position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
             )

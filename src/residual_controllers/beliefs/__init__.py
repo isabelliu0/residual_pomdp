@@ -14,6 +14,7 @@ from residual_controllers.beliefs.particle_filter import (
     update_belief,
 )
 from residual_controllers.beliefs.perception import (
+    detect_objects_from_pointcloud_pca,
     detect_objects_from_segmentation,
     transform_point,
 )
@@ -27,6 +28,7 @@ from residual_controllers.beliefs.structs import (
 __all__ = [
     "Belief",
     "BeliefConfig",
+    "detect_objects_from_pointcloud_pca",
     "BeliefUpdateDiagnostics",
     "CameraIntrinsics",
     "LogOddsOccupancyGrid",

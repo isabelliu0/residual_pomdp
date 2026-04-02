@@ -99,13 +99,13 @@ class NutAssemblyAbstractor(TabletopBaseAbstractor):
             held_idx = int(obs["held_object_idx"][0])
             held_id = None
             if held_idx >= 0:
-                held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+                held_id = self.env.scene.object_ids[held_idx]
 
             nut_id = self._pybullet_ids[self._nut_obj]
             peg_id = self._pybullet_ids[self._peg_obj]
 
             if held_id != nut_id:
-                object_ids = self.env.scene.object_ids  # type: ignore[union-attr]
+                object_ids = self.env.scene.object_ids
                 nut_scene_idx = object_ids.index(nut_id)
                 peg_scene_idx = object_ids.index(peg_id)
                 obs_poses = obs["object_poses"]
@@ -202,7 +202,7 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
         _, nut_obj, peg_obj, _ = self.objects
         nut_id = self.abstractor.get_pybullet_id(nut_obj)
         peg_id = self.abstractor.get_pybullet_id(peg_obj)
-        table_id = self.env.scene.table_id  # type: ignore[union-attr]
+        table_id = self.env.scene.table_id
 
         robot_joints = list(self._current_obs["joint_positions"])
         if len(robot_joints) >= 9:
@@ -214,7 +214,7 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
             table_id: Pose(position=(0.5, 0.0, -0.015)),
         }
         obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):  # type: ignore[union-attr]  # pylint: disable=line-too-long
+        for i, obj_id in enumerate(self.env.scene.object_ids):
             pos = tuple(obs_poses[i, :3])
             orn = tuple(obs_poses[i, 3:])
             object_poses[obj_id] = Pose(position=pos, orientation=orn)
@@ -224,7 +224,7 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
         held_id = None
         grasp_tf = self._current_obs["grasp_transform"]
         if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]  # type: ignore[union-attr]
+            held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
                 position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
             )
@@ -252,25 +252,32 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
         grasp_z_offset = float(curr_ee.position[2]) - nut_world_z
         descent_ee_z = peg_top_z - grasp_z_offset - 0.015
 
-        # Approach: BiRRT motion plan with peg in collision_ids.
-        approach_pose = Pose((peg_cx, peg_cy, peg_top_z + 0.05), down_quat)
-        state.set_pybullet(self.env.robot)
-        motion_plan = run_smooth_motion_planning_to_pose_with_surface_check(
-            approach_pose,
-            self.env.robot,
-            collision_ids=collision_ids,
-            surface_id=table_id,
-            end_effector_frame_to_plan_frame=Pose.identity(),
-            seed=0,
-            max_time=2.0,
-            held_object=nut_id,
-            base_link_to_held_obj=nut_attachment,
-        )
-        if motion_plan is None:
-            return None
-        for robot_joints_step in motion_plan:
-            state = state.copy_with(robot_joints=robot_joints_step)
-            plan.append(state)
+        nut_scene_idx = self.env.scene.object_ids.index(nut_id)
+        peg_scene_idx = self.env.scene.object_ids.index(peg_id)
+        nut_xy = obs_poses[nut_scene_idx, :2]
+        peg_xy = obs_poses[peg_scene_idx, :2]
+        already_aligned = float(np.linalg.norm(nut_xy - peg_xy)) < 1e-3
+
+        if not already_aligned:
+            # Approach: BiRRT motion plan with peg in collision_ids.
+            approach_pose = Pose((peg_cx, peg_cy, peg_top_z + 0.05), down_quat)
+            state.set_pybullet(self.env.robot)
+            motion_plan = run_smooth_motion_planning_to_pose_with_surface_check(
+                approach_pose,
+                self.env.robot,
+                collision_ids=collision_ids,
+                surface_id=table_id,
+                end_effector_frame_to_plan_frame=Pose.identity(),
+                seed=0,
+                max_time=2.0,
+                held_object=nut_id,
+                base_link_to_held_obj=nut_attachment,
+            )
+            if motion_plan is None:
+                return None
+            for robot_joints_step in motion_plan:
+                state = state.copy_with(robot_joints=robot_joints_step)
+                plan.append(state)
 
         # Descent: straight-line Cartesian path down along peg axis.
         state.set_pybullet(self.env.robot)

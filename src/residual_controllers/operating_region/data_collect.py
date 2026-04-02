@@ -126,7 +126,7 @@ def collect_episode(
                 print("Planned! Ready to execute plan for goal_add:", goal_add)
                 success = _execute_plan(system, plan)
                 print(
-                    f"Executed! Success: {success}, uncertainty: {feats.relevant_sigma:.4f}"  # pylint: disable=line-too-long
+                    f"Executed! Success: {success}, uncertainty: {feats.relevant_sigma:.8f}"  # pylint: disable=line-too-long
                 )
 
                 records.append(

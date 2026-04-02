@@ -12,13 +12,14 @@ from pybullet_helpers.geometry import Pose, get_pose, multiply_poses, set_pose
 from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 
+from residual_controllers.beliefs.structs import TabletopState
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 
 _ASSETS_DIR = Path(__file__).parent / "assets"
 _NUT_URDF_PATH = _ASSETS_DIR / "round-nut.urdf"
 _TEXTURE_PATH = _ASSETS_DIR / "steel-scratched.png"
 
-_PEG_RADIUS = 0.01  # nut inner radius ~0.0156m -> ~5.6mm clearance each side
+_PEG_RADIUS = 0.015  # nut inner radius ~0.0156m -> ~0.6mm clearance each side
 _PEG_HEIGHT = 0.1
 _NUT_HALF_HEIGHT = 0.005
 
@@ -152,12 +153,22 @@ class NutAssemblyEnv(TabletopBaseEnv):
             }
         )
 
+    def _sample_nut_pose(self) -> Pose:
+        peg_cx, peg_cy = self._peg_center[0], self._peg_center[1]
+        r = float(np.random.uniform(0.1, 0.25))
+        if np.random.random() < 0.5:
+            theta = float(np.random.uniform(np.pi / 3, np.pi / 2))
+        else:
+            theta = float(np.random.uniform(-np.pi / 2, -np.pi / 3))
+        x = peg_cx + r * np.cos(theta)
+        y = peg_cy + r * np.sin(theta)
+        return Pose(position=(x, y, _NUT_HALF_HEIGHT), orientation=(0, 0, 0, 1))
+
     def _reset_scene(self) -> None:
-        nut_x = float(np.random.uniform(0.45, 0.55))
-        nut_y = float(np.random.uniform(0.10, 0.20))
+        nut_pose = self._sample_nut_pose()
         set_pose(
             self._nut_id,
-            Pose(position=(nut_x, nut_y, _NUT_HALF_HEIGHT), orientation=(0, 0, 0, 1)),
+            nut_pose,
             self.physics_client_id,
         )
         set_pose(
@@ -309,6 +320,44 @@ class NutAssemblyEnv(TabletopBaseEnv):
             set_pose(self._held_object_id, resolved_pose, self.physics_client_id)
             # Keep grasp transform consistent with the displaced nut position
             self._grasp_transform = multiply_poses(ee_pose.invert(), resolved_pose)
+
+    def _update_belief_from_contact(self) -> None:
+        """Collapse belief particles when nut is fitted onto the peg while
+        held.
+
+        When the nut hole aligns with the peg shaft (xy within peg
+        clearance and nut z at or below peg top), the contact geometry
+        gives near-certain localization of both objects.
+        """
+        if self.belief is None or self._held_object_id != self._nut_id:
+            return
+        nut_pos = np.array(get_pose(self._nut_id, self.physics_client_id).position)
+        peg_aabb = p.getAABB(self._peg_id, physicsClientId=self.physics_client_id)
+        peg_cx = (float(peg_aabb[0][0]) + float(peg_aabb[1][0])) / 2
+        peg_cy = (float(peg_aabb[0][1]) + float(peg_aabb[1][1])) / 2
+        peg_top_z = float(peg_aabb[1][2])
+        xy_dist = float(np.linalg.norm(nut_pos[:2] - np.array([peg_cx, peg_cy])))
+        if xy_dist > 0.005 or nut_pos[2] > peg_top_z + 0.002:
+            return
+        nut_gt = get_pose(self._nut_id, self.physics_client_id)
+        peg_gt = get_pose(self._peg_id, self.physics_client_id)
+        nut_pose_gt: tuple = nut_gt.position + nut_gt.orientation
+        peg_pose_gt: tuple = peg_gt.position + peg_gt.orientation
+        new_particles = []
+        for particle in self.belief.particles:
+            new_poses = dict(particle.object_poses)
+            new_poses["NUT"] = nut_pose_gt
+            new_poses["PEG"] = peg_pose_gt
+            new_particles.append(
+                TabletopState(
+                    joint_positions=particle.joint_positions,
+                    gripper_open=particle.gripper_open,
+                    object_poses=new_poses,
+                )
+            )
+        self.belief.particles = new_particles
+        n = len(new_particles)
+        self.belief.weights = np.ones(n) / n
 
     def _is_assembled(self) -> bool:
         """Nut is not held and rests on the table centered around the peg."""

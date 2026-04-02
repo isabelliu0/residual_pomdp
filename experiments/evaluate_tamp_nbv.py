@@ -105,7 +105,7 @@ def main() -> None:
     parser.add_argument(
         "--video-dir",
         type=str,
-        default="videos/tamp_nbv_approach",
+        default="videos/tamp-nbv-approach",
         help="Directory to save per-episode videos. Skipped if not provided.",
     )
     args = parser.parse_args()

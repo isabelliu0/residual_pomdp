@@ -12,20 +12,33 @@ from residual_controllers.operating_region.features import BeliefFeatures
 from residual_controllers.operating_region.predictor import OperatingRegionPredictor
 from residual_controllers.operating_region.structs import SubsequenceRecord
 
+_ENV_DATA_DIRS: dict[str, str] = {
+    "tabletop_view_occlusion": "data/tabletop_view_occlusion",
+    "tabletop_object_occlusion": "data/tabletop_object_occlusion",
+    "nut_assembly": "data/nut_assembly",
+}
+
 
 def main() -> None:
     """Train operating region predictor from collected SubsequenceRecords."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--env",
+        type=str,
+        default="tabletop_view_occlusion",
+        choices=list(_ENV_DATA_DIRS),
+        help="Environment name",
+    )
+    parser.add_argument(
         "--data",
         type=str,
-        default="data/subsequence_records.pkl",
+        default=None,
         help="Path to collected SubsequenceRecords pickle",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="data/operating_region_predictor.pkl",
+        default=None,
         help="Where to save the trained predictor",
     )
     parser.add_argument(
@@ -36,8 +49,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    data_path = Path(args.data)
-    output_path = Path(args.output)
+    env_dir = _ENV_DATA_DIRS[args.env]
+    data_path = Path(args.data or f"{env_dir}/subsequence_records.pkl")
+    output_path = Path(args.output or f"{env_dir}/operating_region_predictor.pkl")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(data_path, "rb") as f:
@@ -86,15 +100,15 @@ def main() -> None:
         print(
             f"  {op}: {len(op_records)} records, "
             f"{successes} successes ({100 * successes // len(op_records)}%), "
-            f"sigma=[{sigma_min:.4f}, {sigma_max:.4f}], "
-            f"P(success|sigma=0)={p_at_zero:.3f}, "
-            f"P(success|sigma=max)={p_at_max:.3f}, "
-            f"sigma_threshold(p>={args.sigma_threshold})={sigma_thresh:.4f}"
+            f"sigma=[{sigma_min:.8f}, {sigma_max:.8f}], "
+            f"P(success|sigma=0)={p_at_zero:.8f}, "
+            f"P(success|sigma=max)={p_at_max:.8f}, "
+            f"sigma_threshold(p>={args.sigma_threshold})={sigma_thresh:.8f}"
         )
         if sigma_thresh == 0.0 and p_at_zero < args.sigma_threshold:
             print(
                 f"    WARNING: P(success) never reaches {args.sigma_threshold} "
-                f"(max={p_at_zero:.3f} at sigma=0). "
+                f"(max={p_at_zero:.8f} at sigma=0). "
                 f"Consider lowering --sigma-threshold."
             )
 

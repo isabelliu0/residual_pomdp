@@ -198,11 +198,11 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         if self.abstractor is None:
             return {}
         assert self.env.scene is not None
-        scene_labels = self.env.scene.label_to_id
+        id_to_label = self.env.scene.id_to_label
         pddl_to_label = {
-            obj.name.lower(): obj.name.upper()
-            for obj in self.abstractor._pybullet_ids  # pylint: disable=protected-access
-            if obj.name.upper() in scene_labels
+            obj.name.lower(): id_to_label[obj_id]
+            for obj, obj_id in self.abstractor._pybullet_ids.items()  # pylint: disable=protected-access
+            if obj_id in id_to_label
         }
         return {name: pddl_to_label[name] for name in names if name in pddl_to_label}
 
