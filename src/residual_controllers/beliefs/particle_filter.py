@@ -414,7 +414,7 @@ def update_belief(
                 )
                 alpha = float(np.clip(dist / reset_distance, min_alpha, 1.0))
                 equiv_pose = _best_yaw_equivalent(
-                    particle_pose, detected_pose, config.n_fold_symmetry
+                    particle_pose, detected_pose, config.get_n_fold(label)
                 )
                 new_object_poses[label] = blend_poses(particle_pose, equiv_pose, alpha)
 
@@ -540,6 +540,66 @@ def update_belief(
         occluded_objects=occluded_objects,
         unknown_objects=unknown_objects,
         object_confidence=object_confidence,
+        held_object_label=belief.held_object_label,
+        visibility_grid=belief.visibility_grid,
+    )
+
+
+def update_belief_from_contact(
+    belief: Belief,
+    robot_body_id: int,
+    label_to_id: dict[str, int],
+    held_object_id: int | None,
+    physics_client_id: int,
+    config: BeliefConfig | None = None,
+) -> Belief:
+    """Blend particle poses toward GT for objects the gripper is touching but
+    not holding."""
+    config = config or BeliefConfig()
+
+    contact_gt: dict[str, SE3Pose] = {}
+    for label, obj_id in label_to_id.items():
+        if obj_id == held_object_id:
+            continue
+        contacts = p.getContactPoints(
+            bodyA=robot_body_id, bodyB=obj_id, physicsClientId=physics_client_id
+        )
+        if contacts:
+            pos, quat = p.getBasePositionAndOrientation(
+                obj_id, physicsClientId=physics_client_id
+            )
+            contact_gt[label] = cast(SE3Pose, tuple(pos) + tuple(quat))
+
+    if not contact_gt:
+        return belief
+
+    new_particles = []
+    for particle in belief.particles:
+        new_poses = dict(particle.object_poses)
+        for label, gt_pose in contact_gt.items():
+            particle_pose = new_poses.get(label)
+            if particle_pose is not None:
+                equiv_pose = _best_yaw_equivalent(
+                    particle_pose, gt_pose, config.get_n_fold(label)
+                )
+                new_poses[label] = blend_poses(
+                    particle_pose, equiv_pose, config.contact_alpha
+                )
+        new_particles.append(
+            TabletopState(
+                joint_positions=particle.joint_positions,
+                gripper_open=particle.gripper_open,
+                object_poses=new_poses,
+            )
+        )
+
+    return Belief(
+        particles=new_particles,
+        weights=belief.weights.copy(),
+        known_objects=belief.known_objects.copy(),
+        occluded_objects=belief.occluded_objects.copy(),
+        unknown_objects=belief.unknown_objects.copy(),
+        object_confidence=dict(belief.object_confidence),
         held_object_label=belief.held_object_label,
         visibility_grid=belief.visibility_grid,
     )

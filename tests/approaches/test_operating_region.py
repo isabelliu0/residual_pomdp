@@ -75,13 +75,15 @@ def test_collect_episode() -> None:
     """Collect episodes with GUI to inspect data collection."""
     n_episodes = 5
 
-    all_records = []
+    all_records: list[SubsequenceRecord] = []
     for ep in range(n_episodes):
         system = TabletopViewOcclusionTAMPSystem(seed=ep + 42, gui=True, num_objects=1)
-        records = collect_episode(system, seed=ep + 42, nbv_step_counts=(0, 10, 20))
-        all_records.extend(records)
-        print(f"\n=== Episode {ep}: {len(records)} records ===")
-        for r in records:
+        subseq_records, _ = collect_episode(
+            system, seed=ep + 42, nbv_step_counts=(0, 10, 20)
+        )
+        all_records.extend(subseq_records)
+        print(f"\n=== Episode {ep}: {len(subseq_records)} records ===")
+        for r in subseq_records:
             print(
                 f"  [{r.source:12s}] op={r.operator_name}"
                 f"  relevant_sigma={r.features.relevant_sigma:.4f}"

@@ -42,6 +42,7 @@ def get_kinematic_plan_to_pick_object(
     max_motion_planning_candidates: int | None = None,
     max_smoothing_iters_per_step: int = 1,
     seed: int = 0,
+    start_ignored_collision_bodies: set[int] | None = None,
 ) -> list[KinematicState] | None:
     """Make a plan to pick up the object from a surface.
 
@@ -114,6 +115,7 @@ def get_kinematic_plan_to_pick_object(
             seed=seed,
             max_time=max_motion_planning_time,
             max_candidate_plans=max_motion_planning_candidates,
+            start_ignored_collision_bodies=start_ignored_collision_bodies,
         )
         num_attempts += 1
         # If motion planning failed, try a different grasp.
@@ -429,7 +431,6 @@ def get_kinematic_plan_to_place_object(
         plan.append(state)
 
         if retract_after:
-
             # Move back to the preplace pose.
             end_effector_pose = robot.get_end_effector_pose()
             end_effector_path = list(
@@ -444,7 +445,7 @@ def get_kinematic_plan_to_place_object(
                     robot,
                     end_effector_path,
                     state.robot_joints,
-                    collision_ids - {object_id},
+                    collision_ids - {object_id, surface_id},
                     joint_distance_fn,
                     max_time=max_motion_planning_time,
                     max_smoothing_iters_per_step=max_smoothing_iters_per_step,

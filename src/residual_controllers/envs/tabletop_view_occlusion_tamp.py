@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
@@ -34,6 +35,7 @@ from residual_controllers.envs.tabletop_tamp_base import (
     TabletopBaseAbstractor,
     TabletopBasePredicates,
     TabletopTypes,
+    _make_checking_state,
     create_pick_operator,
     create_pick_skill,
 )
@@ -167,7 +169,8 @@ PLACE_PARAMS_SPACE = Box(
 
 
 class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
-    """Controller for placing a held object at the target area."""
+    """Controller for placing a held object with PrePlace / Place / PostPlace
+    phases."""
 
     def __init__(
         self,
@@ -178,8 +181,10 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
         super().__init__(objects)
         self.env = env
         self.abstractor = abstractor
-        self._kinematic_plan: list[KinematicState] | None = None
+        self._plan: Sequence[KinematicState | SimpleNamespace] | None = None
+        self._detach_idx: int = -1
         self._action_idx = 0
+        self._phase = "pre_place"
         self._terminated = False
         self._current_obs: dict | None = None
 
@@ -189,40 +194,81 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
     def reset(self, x: dict, params: dict[str, float]) -> None:
         self._terminated = False
         self._action_idx = 0
+        self._phase = "pre_place"
         self._current_obs = x
-        self._kinematic_plan = self._compute_kinematic_plan()
-        if self._kinematic_plan is None:
+        self._plan = self._compute_kinematic_plan()
+        if self._plan is None:
             raise TrajectorySamplingFailure("Failed to compute place plan")
+        self._detach_idx = next(
+            (
+                i
+                for i in range(1, len(self._plan))
+                if self._plan[i - 1].attachments and not self._plan[i].attachments
+            ),
+            -1,
+        )
+        if self._detach_idx < 0:
+            raise TrajectorySamplingFailure("No release transition found in place plan")
+
+    def reset_for_checking(self, plan: Any, initial_obs: dict) -> None:
+        """Reset for checking with a given plan and initial observation."""
+        self._terminated = False
+        self._action_idx = 0
+        self._phase = "pre_place"
+        self._current_obs = initial_obs
+        states = list(plan.states)
+        self._detach_idx = next(
+            (
+                i
+                for i in range(1, len(states))
+                if int(states[i]["held_object_idx"][0])
+                < 0
+                <= int(states[i - 1]["held_object_idx"][0])
+            ),
+            -1,
+        )
+        if self._detach_idx < 0:
+            raise TrajectorySamplingFailure(
+                "No release transition found in plan states"
+            )
+        self._plan = [_make_checking_state(s) for s in states]
 
     def terminated(self) -> bool:
         return self._terminated
 
+    def observe(self, x: dict) -> None:
+        self._current_obs = x
+
     def step(self) -> np.ndarray:
-        if (
-            self._kinematic_plan is None
-            or self._action_idx >= len(self._kinematic_plan) - 1
-        ):
+        if self._phase == "place":
+            assert self._current_obs is not None
+            if int(self._current_obs["held_object_idx"][0]) >= 0:
+                raise TrajectorySamplingFailure("Place failed: object not released")
+            self._phase = "post_place"
+
+        if self._plan is None or self._action_idx >= len(self._plan) - 1:
             self._terminated = True
             return np.zeros(8, dtype=np.float32)
 
-        s0 = self._kinematic_plan[self._action_idx]
-        s1 = self._kinematic_plan[self._action_idx + 1]
+        s0 = self._plan[self._action_idx]
+        s1 = self._plan[self._action_idx + 1]
         self._action_idx += 1
 
-        if self._action_idx >= len(self._kinematic_plan) - 1:
+        if self._action_idx == self._detach_idx:
+            assert self._current_obs is not None
+            ee_xy = np.array(self._current_obs["camera_pose"][:2], dtype=float)
+            target_xy = np.array(self._current_obs["target_area_pose"][:2], dtype=float)
+            if np.linalg.norm(ee_xy - target_xy) > 0.05:
+                raise TrajectorySamplingFailure("PrePlace failed: EE not above target")
+            self._phase = "place"
+
+        if self._action_idx >= len(self._plan) - 1:
             self._terminated = True
 
         joint_delta = np.subtract(s1.robot_joints[:7], s0.robot_joints[:7])
-
-        if s0.attachments and not s1.attachments:
-            gripper_action = 1.0
-        else:
-            gripper_action = 0.0
+        gripper_action = 1.0 if (s0.attachments and not s1.attachments) else 0.0
 
         return np.hstack([joint_delta, [gripper_action]]).astype(np.float32)
-
-    def observe(self, x: dict) -> None:
-        pass
 
     def _compute_kinematic_plan(self) -> list[KinematicState] | None:
         assert self.env.robot is not None
@@ -246,14 +292,15 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
         }
         obs_poses = self._current_obs["object_poses"]
         for i, obj_id in enumerate(self.env.scene.object_ids):
-            pos = tuple(obs_poses[i, :3])
-            orn = tuple(obs_poses[i, 3:])
-            object_poses[obj_id] = Pose(position=pos, orientation=orn)
+            object_poses[obj_id] = Pose(
+                position=tuple(obs_poses[i, :3]),
+                orientation=tuple(obs_poses[i, 3:]),
+            )
 
         held_idx = int(self._current_obs["held_object_idx"][0])
+        grasp_tf = self._current_obs["grasp_transform"]
         attachments: dict[int, Pose] = {}
         held_id = None
-        grasp_tf = self._current_obs["grasp_transform"]
         if held_idx >= 0:
             held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
@@ -267,7 +314,6 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
         world_obj_pose = Pose(
             position=(area_x, area_y, place_z), orientation=(0, 0, 0, 1)
         )
-
         table_pose = get_pose(self.env.scene.table_id, self.env.physics_client_id)
         relative_placement = multiply_poses(table_pose.invert(), world_obj_pose)
 
@@ -285,7 +331,7 @@ class PlaceGroundController(GroundParameterizedController[dict, np.ndarray]):
             placement_generator_iters=1,
             max_motion_planning_time=1.0,
             max_smoothing_iters_per_step=1,
-            retract_after=False,
+            retract_after=True,
         )
 
         initial_state.set_pybullet(self.env.robot)

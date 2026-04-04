@@ -73,6 +73,7 @@ def run_smooth_motion_planning_to_pose_with_surface_check(
     birrt_num_iters: int = 100,
     sampling_fn: Callable[[JointPositions], JointPositions] | None = None,
     distance_threshold: float = 1e-6,
+    start_ignored_collision_bodies: set[int] | None = None,
 ) -> Optional[list[JointPositions]]:
     """Like run_smooth_motion_planning_to_pose but checks arm links vs surface.
 
@@ -107,6 +108,28 @@ def run_smooth_motion_planning_to_pose_with_surface_check(
     def _arm_surface_ok(_joints: JointPositions) -> bool:
         return not check_arm_body_collision(robot, surface_id, distance_threshold)
 
+    def _make_constraint_with_start_skip(
+        skip_flag: list,
+        bodies: set[int],
+    ) -> Callable[[JointPositions], bool]:
+        def _constraint(_joints: JointPositions) -> bool:
+            if not _arm_surface_ok(_joints):
+                return False
+            if skip_flag[0]:
+                skip_flag[0] = False
+                return True
+            for bid in bodies:
+                if check_body_collisions(
+                    robot.robot_id,
+                    bid,
+                    robot.physics_client_id,
+                    distance_threshold=distance_threshold,
+                ):
+                    return False
+            return True
+
+        return _constraint
+
     robot_initial_joints = robot.get_joint_positions()
     start_time = time.perf_counter()
     best_motion_plan: list[JointPositions] | None = None
@@ -129,23 +152,44 @@ def run_smooth_motion_planning_to_pose_with_surface_check(
             max_candidates=1,
         ):
             robot.set_joints(robot_initial_joints)
-            motion_plan = run_motion_planning(
-                robot,
-                robot_initial_joints,
-                target_joint_positions,
-                collision_ids,
-                seed,
-                robot.physics_client_id,
-                held_object=held_object,
-                base_link_to_held_obj=base_link_to_held_obj,
-                sampling_fn=sampling_fn,
-                hyperparameters=MotionPlanningHyperparameters(
-                    birrt_num_attempts=birrt_num_attempts,
-                    birrt_num_iters=birrt_num_iters,
-                ),
-                additional_state_constraint_fn=_arm_surface_ok,
-                distance_threshold=distance_threshold,
-            )
+            if start_ignored_collision_bodies:
+                motion_plan = run_motion_planning(
+                    robot,
+                    robot_initial_joints,
+                    target_joint_positions,
+                    collision_ids - start_ignored_collision_bodies,
+                    seed,
+                    robot.physics_client_id,
+                    held_object=held_object,
+                    base_link_to_held_obj=base_link_to_held_obj,
+                    sampling_fn=sampling_fn,
+                    hyperparameters=MotionPlanningHyperparameters(
+                        birrt_num_attempts=birrt_num_attempts,
+                        birrt_num_iters=birrt_num_iters,
+                    ),
+                    additional_state_constraint_fn=_make_constraint_with_start_skip(
+                        [True], start_ignored_collision_bodies
+                    ),
+                    distance_threshold=distance_threshold,
+                )
+            else:
+                motion_plan = run_motion_planning(
+                    robot,
+                    robot_initial_joints,
+                    target_joint_positions,
+                    collision_ids,
+                    seed,
+                    robot.physics_client_id,
+                    held_object=held_object,
+                    base_link_to_held_obj=base_link_to_held_obj,
+                    sampling_fn=sampling_fn,
+                    hyperparameters=MotionPlanningHyperparameters(
+                        birrt_num_attempts=birrt_num_attempts,
+                        birrt_num_iters=birrt_num_iters,
+                    ),
+                    additional_state_constraint_fn=_arm_surface_ok,
+                    distance_threshold=distance_threshold,
+                )
             if motion_plan is not None:
                 num_iters += 1
                 score = _score_motion_plan(motion_plan)

@@ -12,6 +12,7 @@ from residual_controllers.beliefs.particle_filter import (
     get_mean_state,
     predict_belief,
     update_belief,
+    update_belief_from_contact,
 )
 from residual_controllers.beliefs.perception import (
     detect_objects_from_pointcloud_pca,
@@ -44,4 +45,5 @@ __all__ = [
     "predict_belief",
     "transform_point",
     "update_belief",
+    "update_belief_from_contact",
 ]

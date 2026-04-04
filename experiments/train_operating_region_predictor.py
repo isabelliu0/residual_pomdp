@@ -10,7 +10,10 @@ import numpy as np
 
 from residual_controllers.operating_region.features import BeliefFeatures
 from residual_controllers.operating_region.predictor import OperatingRegionPredictor
-from residual_controllers.operating_region.structs import SubsequenceRecord
+from residual_controllers.operating_region.structs import (
+    OperatorRecord,
+    SubsequenceRecord,
+)
 
 _ENV_DATA_DIRS: dict[str, str] = {
     "tabletop_view_occlusion": "data/tabletop_view_occlusion",
@@ -19,53 +22,11 @@ _ENV_DATA_DIRS: dict[str, str] = {
 }
 
 
-def main() -> None:
-    """Train operating region predictor from collected SubsequenceRecords."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--env",
-        type=str,
-        default="tabletop_view_occlusion",
-        choices=list(_ENV_DATA_DIRS),
-        help="Environment name",
-    )
-    parser.add_argument(
-        "--data",
-        type=str,
-        default=None,
-        help="Path to collected SubsequenceRecords pickle",
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Where to save the trained predictor",
-    )
-    parser.add_argument(
-        "--sigma-threshold",
-        type=float,
-        default=0.8,
-        help="P(success) threshold for find_sigma_threshold()",
-    )
-    args = parser.parse_args()
-
-    env_dir = _ENV_DATA_DIRS[args.env]
-    data_path = Path(args.data or f"{env_dir}/subsequence_records.pkl")
-    output_path = Path(args.output or f"{env_dir}/operating_region_predictor.pkl")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(data_path, "rb") as f:
-        records: list[SubsequenceRecord] = pickle.load(f)
-
-    print(f"Loaded {len(records)} records from {data_path}")
-
-    predictor = OperatingRegionPredictor()
-    predictor.fit(records)
-
-    predictor.save(output_path)
-    print(f"Saved predictor to {output_path}")
-
-    print("\n=== Per-operator summary ===")
+def _print_predictor_summary(
+    predictor: OperatingRegionPredictor,
+    records: list,
+    sigma_threshold: float,
+) -> None:
     for op in predictor.fitted_operators:
         op_records = [r for r in records if r.operator_name == op]
         successes = sum(r.success for r in op_records)
@@ -93,9 +54,7 @@ def main() -> None:
             ),
         )
 
-        sigma_thresh = predictor.find_sigma_threshold(
-            op, threshold=args.sigma_threshold
-        )
+        sigma_thresh = predictor.find_sigma_threshold(op, threshold=sigma_threshold)
 
         print(
             f"  {op}: {len(op_records)} records, "
@@ -103,14 +62,99 @@ def main() -> None:
             f"sigma=[{sigma_min:.8f}, {sigma_max:.8f}], "
             f"P(success|sigma=0)={p_at_zero:.8f}, "
             f"P(success|sigma=max)={p_at_max:.8f}, "
-            f"sigma_threshold(p>={args.sigma_threshold})={sigma_thresh:.8f}"
+            f"sigma_threshold(p>={sigma_threshold})={sigma_thresh:.8f}"
         )
-        if sigma_thresh == 0.0 and p_at_zero < args.sigma_threshold:
+        if sigma_thresh == 0.0 and p_at_zero < sigma_threshold:
             print(
-                f"    WARNING: P(success) never reaches {args.sigma_threshold} "
+                f"    WARNING: P(success) never reaches {sigma_threshold} "
                 f"(max={p_at_zero:.8f} at sigma=0). "
                 f"Consider lowering --sigma-threshold."
             )
+
+
+def main() -> None:
+    """Train operating region predictor from collected SubsequenceRecords."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--env",
+        type=str,
+        default="tabletop_view_occlusion",
+        choices=list(_ENV_DATA_DIRS),
+        help="Environment name",
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        default=None,
+        help="Path to collected SubsequenceRecords pickle",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Where to save the trained predictor",
+    )
+    parser.add_argument(
+        "--operator-data",
+        type=str,
+        default=None,
+        help="Path to collected OperatorRecords pickle",
+    )
+    parser.add_argument(
+        "--operator-output",
+        type=str,
+        default=None,
+        help="Where to save the trained per-operator predictor",
+    )
+    parser.add_argument(
+        "--sigma-threshold",
+        type=float,
+        default=0.8,
+        help="P(success) threshold for find_sigma_threshold()",
+    )
+    args = parser.parse_args()
+
+    env_dir = _ENV_DATA_DIRS[args.env]
+    data_path = Path(args.data or f"{env_dir}/subsequence_records.pkl")
+    output_path = Path(args.output or f"{env_dir}/operating_region_predictor.pkl")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(data_path, "rb") as f:
+        records: list[SubsequenceRecord] = pickle.load(f)
+
+    print(f"Loaded {len(records)} records from {data_path}")
+
+    predictor = OperatingRegionPredictor()
+    predictor.fit(records)
+
+    predictor.save(output_path)
+    print(f"Saved predictor to {output_path}")
+
+    print("\n=== Per-subsequence summary ===")
+    _print_predictor_summary(predictor, records, args.sigma_threshold)
+
+    op_data_path = Path(args.operator_data or f"{env_dir}/operator_records.pkl")
+    if op_data_path.exists():
+        op_output_path = Path(
+            args.operator_output or f"{env_dir}/operator_region_predictor.pkl"
+        )
+        op_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(op_data_path, "rb") as f:
+            op_records: list[OperatorRecord] = pickle.load(f)
+
+        print(f"\nLoaded {len(op_records)} operator records from {op_data_path}")
+
+        op_predictor = OperatingRegionPredictor()
+        op_predictor.fit(op_records)
+
+        op_predictor.save(op_output_path)
+        print(f"Saved operator predictor to {op_output_path}")
+
+        print("\n=== Per-operator summary ===")
+        _print_predictor_summary(op_predictor, op_records, args.sigma_threshold)
+    else:
+        print(f"\nNo operator records found at {op_data_path}, skipping.")
 
 
 if __name__ == "__main__":

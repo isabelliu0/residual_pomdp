@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
@@ -201,6 +202,14 @@ class TabletopBaseAbstractor(BeliefAbstractor[dict]):
         return union
 
 
+def _make_checking_state(obs: dict) -> SimpleNamespace:
+    held = int(obs["held_object_idx"][0])
+    return SimpleNamespace(
+        robot_joints=list(obs["joint_positions"]),
+        attachments={0: None} if held >= 0 else {},
+    )
+
+
 GRASP_PARAMS_SPACE = Box(
     low=np.array([], dtype=np.float32),
     high=np.array([], dtype=np.float32),
@@ -209,7 +218,8 @@ GRASP_PARAMS_SPACE = Box(
 
 
 class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
-    """Controller for picking an object using kinematic planning."""
+    """Controller for picking an object with PreGrasp / Grasp / PostGrasp
+    phases."""
 
     def __init__(
         self,
@@ -220,8 +230,10 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
         super().__init__(objects)
         self.env = env
         self.abstractor = abstractor
-        self._kinematic_plan: list[KinematicState] | None = None
+        self._plan: Sequence[KinematicState | SimpleNamespace] | None = None
+        self._attach_idx: int = -1
         self._action_idx = 0
+        self._phase = "pre_grasp"
         self._terminated = False
         self._current_obs: dict | None = None
 
@@ -231,31 +243,63 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
     def reset(self, x: dict, params: dict[str, float]) -> None:
         self._terminated = False
         self._action_idx = 0
+        self._phase = "pre_grasp"
         self._current_obs = x
-        self._kinematic_plan = self._compute_kinematic_plan()
-        if self._kinematic_plan is None:
+        self._plan = self._compute_kinematic_plan()
+        if self._plan is None:
             raise TrajectorySamplingFailure("Failed to compute pick plan")
+        self._attach_idx = next(
+            (
+                i
+                for i in range(1, len(self._plan))
+                if self._plan[i].attachments and not self._plan[i - 1].attachments
+            ),
+            -1,
+        )
+        if self._attach_idx < 0:
+            raise TrajectorySamplingFailure("No grasp transition found in pick plan")
 
     def terminated(self) -> bool:
         return self._terminated
 
+    def observe(self, x: dict) -> None:
+        self._current_obs = x
+
     def step(self) -> np.ndarray:
-        if (
-            self._kinematic_plan is None
-            or self._action_idx >= len(self._kinematic_plan) - 1
-        ):
+        if self._phase == "grasp":
+            assert self._current_obs is not None
+            if int(self._current_obs["held_object_idx"][0]) < 0:
+                raise TrajectorySamplingFailure(
+                    "Grasp failed: no object held after close"
+                )
+            self._phase = "post_grasp"
+
+        if self._plan is None or self._action_idx >= len(self._plan) - 1:
             self._terminated = True
             return np.zeros(8, dtype=np.float32)
 
-        s0 = self._kinematic_plan[self._action_idx]
-        s1 = self._kinematic_plan[self._action_idx + 1]
+        s0 = self._plan[self._action_idx]
+        s1 = self._plan[self._action_idx + 1]
         self._action_idx += 1
 
-        if self._action_idx >= len(self._kinematic_plan) - 1:
+        if self._action_idx == self._attach_idx:
+            assert self._current_obs is not None
+            assert self.env.scene is not None
+            ee_xy = np.array(self._current_obs["camera_pose"][:2], dtype=float)
+            _, obj, _ = self.objects
+            obj_id = self.abstractor.get_pybullet_id(obj)
+            obj_idx = self.env.scene.object_ids.index(obj_id)
+            obj_xy = np.array(
+                self._current_obs["object_poses"][obj_idx, :2], dtype=float
+            )
+            if np.linalg.norm(ee_xy - obj_xy) > 0.05:
+                raise TrajectorySamplingFailure("PreGrasp failed: EE not above object")
+            self._phase = "grasp"
+
+        if self._action_idx >= len(self._plan) - 1:
             self._terminated = True
 
         joint_delta = np.subtract(s1.robot_joints[:7], s0.robot_joints[:7])
-
         if s1.attachments and not s0.attachments:
             gripper_action = -1.0
         elif s0.attachments and not s1.attachments:
@@ -265,17 +309,34 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
 
         return np.hstack([joint_delta, [gripper_action]]).astype(np.float32)
 
-    def observe(self, x: dict) -> None:
-        pass
+    def reset_for_checking(self, plan: Any, initial_obs: dict) -> None:
+        """Reset for checking with a given plan and initial observation."""
+        self._terminated = False
+        self._action_idx = 0
+        self._phase = "pre_grasp"
+        self._current_obs = initial_obs
+        states = list(plan.states)
+        self._attach_idx = next(
+            (
+                i
+                for i in range(1, len(states))
+                if int(states[i - 1]["held_object_idx"][0])
+                < 0
+                <= int(states[i]["held_object_idx"][0])
+            ),
+            -1,
+        )
+        if self._attach_idx < 0:
+            raise TrajectorySamplingFailure("No grasp transition found in plan states")
+        self._plan = [_make_checking_state(s) for s in states]
 
-    def _compute_kinematic_plan(self) -> list[KinematicState] | None:
-        assert self.env.robot is not None
+    def _build_initial_state_from_obs(self) -> tuple[KinematicState, int]:
+        """Build KinematicState from current obs.
+
+        Returns (state, held_idx).
+        """
         assert self.env.scene is not None
         assert self._current_obs is not None
-
-        _, obj, surface = self.objects
-        object_id = self.abstractor.get_pybullet_id(obj)
-        surface_id = self.abstractor.get_pybullet_id(surface)
 
         robot_joints = list(self._current_obs["joint_positions"])
         if len(robot_joints) >= 9:
@@ -288,24 +349,47 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
         }
         obs_poses = self._current_obs["object_poses"]
         for i, obj_id in enumerate(self.env.scene.object_ids):
-            pos = tuple(obs_poses[i, :3])
-            orn = tuple(obs_poses[i, 3:])
-            object_poses[obj_id] = Pose(position=pos, orientation=orn)
+            object_poses[obj_id] = Pose(
+                position=tuple(obs_poses[i, :3]),
+                orientation=tuple(obs_poses[i, 3:]),
+            )
 
         held_idx = int(self._current_obs["held_object_idx"][0])
-        attachments: dict[int, Pose] = {}
-        held_id = None
         grasp_tf = self._current_obs["grasp_transform"]
+        attachments: dict[int, Pose] = {}
         if held_idx >= 0:
             held_id = self.env.scene.object_ids[held_idx]
             attachments[held_id] = Pose(
                 position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
             )
 
-        initial_state = KinematicState(robot_joints, object_poses, attachments)
+        return KinematicState(robot_joints, object_poses, attachments), held_idx
+
+    def _restore_env_grip_state(self, held_idx: int) -> None:
+        assert self._current_obs is not None
+        assert self.env.scene is not None
+        grasp_tf = self._current_obs["grasp_transform"]
+        if held_idx >= 0:
+            self.env.held_object_id = self.env.scene.object_ids[held_idx]
+            self.env.grasp_transform = Pose(
+                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
+            )
+        else:
+            self.env.held_object_id = None
+            self.env.grasp_transform = None
+
+    def _compute_kinematic_plan(self) -> list[KinematicState] | None:
+        assert self.env.robot is not None
+        assert self.env.scene is not None
+
+        _, obj, surface = self.objects
+        object_id = self.abstractor.get_pybullet_id(obj)
+        surface_id = self.abstractor.get_pybullet_id(surface)
+
+        initial_state, held_idx = self._build_initial_state_from_obs()
         initial_state.set_pybullet(self.env.robot)
 
-        collision_ids = set(object_poses.keys())
+        collision_ids = set(initial_state.object_poses.keys())
         plan = get_kinematic_plan_to_pick_object(
             initial_state,
             self.env.robot,
@@ -313,20 +397,14 @@ class PickGroundController(GroundParameterizedController[dict, np.ndarray]):
             surface_id,
             collision_ids,
             grasp_generator=iter([self._get_grasp_pose()]),
+            start_ignored_collision_bodies={object_id},
             grasp_generator_iters=5,
             max_motion_planning_time=1.0,
             max_smoothing_iters_per_step=1,
         )
 
         initial_state.set_pybullet(self.env.robot)
-        if held_idx >= 0:
-            self.env.held_object_id = held_id
-            self.env.grasp_transform = Pose(
-                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
-            )
-        else:
-            self.env.held_object_id = None
-            self.env.grasp_transform = None
+        self._restore_env_grip_state(held_idx)
 
         return plan
 
@@ -363,51 +441,20 @@ def create_pick_operator(
 
 class ObjPickGroundController(PickGroundController):
     """Pick controller using top-of-AABB world-frame grasp for Objaverse
-    objects.
-
-    Works for objects in any orientation (e.g., tilted) by computing the
-    grasp in world frame and converting to object frame before passing
-    to the planner.
-    """
+    objects."""
 
     def _compute_kinematic_plan(self) -> list[KinematicState] | None:
         assert self.env.robot is not None
         assert self.env.scene is not None
-        assert self._current_obs is not None
 
         _, obj, surface = self.objects
         object_id = self.abstractor.get_pybullet_id(obj)
         surface_id = self.abstractor.get_pybullet_id(surface)
 
-        robot_joints = list(self._current_obs["joint_positions"])
-        if len(robot_joints) >= 9:
-            finger_avg = (robot_joints[7] + robot_joints[8]) / 2
-            robot_joints[7] = finger_avg
-            robot_joints[8] = finger_avg
-
-        object_poses: dict[int, Pose] = {
-            self.env.scene.table_id: Pose(position=(0.5, 0.0, -0.015)),
-        }
-        obs_poses = self._current_obs["object_poses"]
-        for i, obj_id in enumerate(self.env.scene.object_ids):
-            pos = tuple(obs_poses[i, :3])
-            orn = tuple(obs_poses[i, 3:])
-            object_poses[obj_id] = Pose(position=pos, orientation=orn)
-
-        held_idx = int(self._current_obs["held_object_idx"][0])
-        attachments: dict[int, Pose] = {}
-        held_id = None
-        grasp_tf = self._current_obs["grasp_transform"]
-        if held_idx >= 0:
-            held_id = self.env.scene.object_ids[held_idx]
-            attachments[held_id] = Pose(
-                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
-            )
-
-        initial_state = KinematicState(robot_joints, object_poses, attachments)
+        initial_state, held_idx = self._build_initial_state_from_obs()
         initial_state.set_pybullet(self.env.robot)
 
-        collision_ids = set(object_poses.keys())
+        collision_ids = set(initial_state.object_poses.keys())
         plan = get_kinematic_plan_to_pick_object(
             initial_state,
             self.env.robot,
@@ -415,20 +462,14 @@ class ObjPickGroundController(PickGroundController):
             surface_id,
             collision_ids,
             grasp_generator=self._grasp_poses(object_id),
+            start_ignored_collision_bodies={object_id},
             grasp_generator_iters=5,
             max_motion_planning_time=1.0,
             max_smoothing_iters_per_step=1,
         )
 
         initial_state.set_pybullet(self.env.robot)
-        if held_idx >= 0:
-            self.env.held_object_id = held_id
-            self.env.grasp_transform = Pose(
-                position=tuple(grasp_tf[:3]), orientation=tuple(grasp_tf[3:])
-            )
-        else:
-            self.env.held_object_id = None
-            self.env.grasp_transform = None
+        self._restore_env_grip_state(held_idx)
 
         return plan
 

@@ -4,10 +4,40 @@ from __future__ import annotations
 
 import copy
 
+from bilevel_planning.trajectory_samplers.trajectory_sampler import (
+    TrajectorySamplingFailure,
+)
+
 from residual_controllers.beliefs.structs import Belief
 from residual_controllers.operating_region.features import extract_features
-from residual_controllers.operating_region.structs import SubsequenceRecord
+from residual_controllers.operating_region.structs import (
+    OperatorRecord,
+    SubsequenceRecord,
+)
 from residual_controllers.tamp.pddl_utils import build_object_interaction_graph
+
+
+def execute_plan_with_checks(
+    plan, controller, env, initial_obs: dict
+) -> tuple[bool, bool]:
+    """Replay plan.actions with phase failure checks.
+
+    Returns (terminated, failure_detected).
+    """
+    try:
+        controller.reset_for_checking(plan, initial_obs)
+    except TrajectorySamplingFailure:
+        return False, True
+    for action in plan.actions:
+        try:
+            controller.step()
+        except TrajectorySamplingFailure:
+            return False, True
+        new_obs, _, terminated, _, _ = env.step(action)
+        if terminated:
+            return True, False
+        controller.observe(new_obs)
+    return False, False
 
 
 def _parse_operator_name(action_str: str) -> str:
@@ -24,6 +54,19 @@ def _execute_plan(system, plan) -> bool:
         if terminated:
             break
     return terminated
+
+
+def _execute_plan_with_checks(system, plan, action_str: str) -> bool:
+    if plan is None:
+        return False
+    get_ctrl = getattr(system, "get_grounded_controller", None)
+    if get_ctrl is not None:
+        controller = get_ctrl(action_str)
+        if controller is not None:
+            obs = system.env.get_observation()
+            terminated, _ = execute_plan_with_checks(plan, controller, system.env, obs)
+            return terminated
+    return _execute_plan(system, plan)
 
 
 def _select_best_viewpoint(system, target_labels: list[str], seed: int | None):
@@ -78,12 +121,20 @@ def _do_nbv_steps(
     return steps_done
 
 
+def _check_operator_success(system, goal_atoms: set) -> bool:
+    if system.abstractor is None:
+        return False
+    obs = system.env.get_observation()
+    state = system.abstractor.step(obs)
+    return goal_atoms.issubset(state.atoms)
+
+
 def collect_episode(
     system,
     seed: int,
     nbv_step_counts: tuple[int, ...] = (0, 10, 20, 40),
-) -> list[SubsequenceRecord]:
-    """Collect SubsequenceRecords for one episode.
+) -> tuple[list[SubsequenceRecord], list[OperatorRecord]]:
+    """Collect SubsequenceRecords and OperatorRecords for one episode.
 
     We use information gathering to augment the distribution of belief
     states we see for each subsequence, which is important for training
@@ -93,17 +144,18 @@ def collect_episode(
 
     symbolic_plan = system.get_symbolic_plan()
     if symbolic_plan is None:
-        return []
+        return [], []
 
     ignored = system.get_oig_ignored_objects()
     subsequences = build_object_interaction_graph(symbolic_plan, ignored)
 
-    records: list[SubsequenceRecord] = []
+    subseq_records: list[SubsequenceRecord] = []
+    op_records: list[OperatorRecord] = []
 
     for subseq_actions, obj_names in subsequences:
         all_obj_labels = system.env.object_labels
         relevant_labels = list(system.get_object_labels_for_names(obj_names).values())
-        goal_add, _ = system.get_subsequence_effects(subseq_actions)
+        _, _ = system.get_subsequence_effects(subseq_actions)
 
         operator_name = "+".join(_parse_operator_name(a) for a in subseq_actions)
 
@@ -118,23 +170,68 @@ def collect_episode(
 
                 steps_done = _do_nbv_steps(system, n_nbv, relevant_labels, seed)
 
-                feats = extract_features(
+                subseq_feats = extract_features(
                     system.env.belief, all_obj_labels, relevant_labels
                 )
 
-                plan = system.plan_for_goal(goal_add, seed=seed)
-                print("Planned! Ready to execute plan for goal_add:", goal_add)
-                success = _execute_plan(system, plan)
+                episode_op_records: list[OperatorRecord] = []
+                subseq_success = False
+
+                for action in subseq_actions:
+                    op_name = _parse_operator_name(action)
+                    op_goal, _ = system.get_subsequence_effects([action])
+
+                    op_feats = extract_features(
+                        system.env.belief, all_obj_labels, relevant_labels
+                    )
+
+                    try:
+                        plan_i = system.plan_for_goal(op_goal, seed=seed)
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        print(f"  Planning failed for {op_name}: {e}, skipping.")
+                        break
+                    terminated_i = _execute_plan_with_checks(system, plan_i, action)
+                    success_i = terminated_i or _check_operator_success(system, op_goal)
+
+                    print(
+                        f"  Op {op_name}: success={success_i}, "
+                        f"uncertainty={op_feats.relevant_sigma:.8f}"
+                    )
+
+                    episode_op_records.append(
+                        OperatorRecord(
+                            operator_name=op_name,
+                            sequence_name=operator_name,
+                            relevant_object_labels=relevant_labels,
+                            features=op_feats,
+                            success=success_i,
+                            source="nbv",
+                            metadata={
+                                "nbv_steps_requested": n_nbv,
+                                "nbv_steps_done": steps_done,
+                            },
+                        )
+                    )
+
+                    if terminated_i:
+                        subseq_success = True
+                        break
+                    if not success_i:
+                        break
+
+                op_records.extend(episode_op_records)
+
                 print(
-                    f"Executed! Success: {success}, uncertainty: {feats.relevant_sigma:.8f}"  # pylint: disable=line-too-long
+                    f"Executed! Success: {subseq_success}, "
+                    f"uncertainty: {subseq_feats.relevant_sigma:.8f}"  # pylint: disable=line-too-long
                 )
 
-                records.append(
+                subseq_records.append(
                     SubsequenceRecord(
                         operator_name=operator_name,
                         relevant_object_labels=relevant_labels,
-                        features=feats,
-                        success=success,
+                        features=subseq_feats,
+                        success=subseq_success,
                         source="nbv",
                         metadata={
                             "nbv_steps_requested": n_nbv,
@@ -143,4 +240,4 @@ def collect_episode(
                     )
                 )
 
-    return records
+    return subseq_records, op_records
