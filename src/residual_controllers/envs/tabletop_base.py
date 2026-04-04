@@ -22,8 +22,9 @@ from residual_controllers.beliefs import (
     create_initial_belief,
     predict_belief,
     update_belief,
+    update_belief_from_contact,
 )
-from residual_controllers.beliefs.structs import Belief
+from residual_controllers.beliefs.structs import Belief, BeliefConfig
 
 
 @dataclass
@@ -180,6 +181,13 @@ class TabletopBaseEnv(gym.Env, ABC):
         """Override to collapse belief particles based on contact/fit
         events."""
 
+    def get_belief_config(self) -> BeliefConfig:
+        """Return the BeliefConfig for this env.
+
+        Override in subclasses to set per-label n_fold_symmetry.
+        """
+        return BeliefConfig()
+
     def _get_info(self) -> dict:
         return {}
 
@@ -204,7 +212,9 @@ class TabletopBaseEnv(gym.Env, ABC):
         info = self._get_info()
 
         camera_image = self.get_camera_image()
-        self.belief = create_initial_belief(self, camera_image, num_particles=100)
+        self.belief = create_initial_belief(
+            self, camera_image, num_particles=100, config=self.get_belief_config()
+        )
 
         if self.gui:
             self._update_camera_visualization()
@@ -280,6 +290,7 @@ class TabletopBaseEnv(gym.Env, ABC):
 
             camera_image = self.get_camera_image()
             camera_pose = self.get_camera_pose_se3()
+            belief_config = self.get_belief_config()
             self.belief = update_belief(
                 self.belief,
                 camera_image,
@@ -289,6 +300,15 @@ class TabletopBaseEnv(gym.Env, ABC):
                 self.physics_client_id,
                 table_id=self._table_id,
                 excluded_aabbs=self._get_excluded_aabbs(),
+                config=belief_config,
+            )
+            self.belief = update_belief_from_contact(
+                self.belief,
+                self.robot.robot_id,
+                label_to_id,
+                self._held_object_id,
+                self.physics_client_id,
+                config=belief_config,
             )
             self._update_belief_from_contact()
 

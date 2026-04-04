@@ -99,6 +99,14 @@ class BeliefConfig:
 
     # Rotational symmetry for orientation-aware pose blending.
     n_fold_symmetry: int = 1
+    label_n_fold: dict[str, int] = field(default_factory=dict)
+
+    def get_n_fold(self, label: str) -> int:
+        """Return the n-fold symmetry for a specific label."""
+        return self.label_n_fold.get(label, self.n_fold_symmetry)
+
+    # Contact-based pose blending: alpha used when gripper touches an object.
+    contact_alpha: float = 0.8
 
     # Ego-pose confidence
     ego_pose_confidence_threshold: float = 0.05

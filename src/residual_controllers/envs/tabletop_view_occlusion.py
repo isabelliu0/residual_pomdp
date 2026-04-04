@@ -14,6 +14,7 @@ from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 from pybullet_helpers.utils import create_pybullet_block
 from tomsgeoms2d.structs import Circle
 
+from residual_controllers.beliefs.structs import BeliefConfig
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 
 
@@ -195,6 +196,9 @@ class TabletopViewOcclusionEnv(TabletopBaseEnv):
 
     def _get_label_to_id(self) -> dict[str, int]:
         return self._label_to_id
+
+    def get_belief_config(self) -> BeliefConfig:
+        return BeliefConfig(label_n_fold={lbl: 4 for lbl in self._label_to_id})
 
     def _get_movable_object_ids(self) -> list[int]:
         return self._object_ids

@@ -12,7 +12,7 @@ from pybullet_helpers.geometry import Pose, get_pose, multiply_poses, set_pose
 from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 
-from residual_controllers.beliefs.structs import TabletopState
+from residual_controllers.beliefs.structs import BeliefConfig, TabletopState
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 
 _ASSETS_DIR = Path(__file__).parent / "assets"
@@ -189,6 +189,9 @@ class NutAssemblyEnv(TabletopBaseEnv):
 
     def _get_label_to_id(self) -> dict[str, int]:
         return self._label_to_id
+
+    def get_belief_config(self) -> BeliefConfig:
+        return BeliefConfig(label_n_fold={"NUT": 36, "PEG": 36})
 
     def _get_movable_object_ids(self) -> list[int]:
         return [self._nut_id]

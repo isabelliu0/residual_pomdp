@@ -7,6 +7,9 @@ from enum import Enum, auto
 from typing import Any
 
 import numpy as np
+from bilevel_planning.trajectory_samplers.trajectory_sampler import (
+    TrajectorySamplingFailure,
+)
 
 from residual_controllers.approaches.base import (
     ApproachStepResult,
@@ -86,6 +89,8 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._symbolic_plan: list[str] | None = None
         self._oig_subsequences: list[tuple[list[str], set[str]]] = []
         self._current_subseq_idx: int = 0
+        self._active_controllers: list[Any] = []
+        self._is_first_controller_step: bool = False
 
     def reset(self, _obs: Any, info: dict[str, Any]) -> ApproachStepResult[Any]:
         self.metrics = TampNbvMetrics()
@@ -96,6 +101,8 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._last_info = info
         self._oig_subsequences = []
         self._current_subseq_idx = 0
+        self._active_controllers = []
+        self._is_first_controller_step = False
 
         self._target_label = info.get("target_object_label")
         if self._target_label is None:
@@ -264,6 +271,7 @@ class TampNbvApproach(BaseApproach[Any, Any]):
         self._nbv_state = None
         self._plan_actions = []
         self._plan_idx = 0
+        self._active_controllers = []
         return self._decide_next_action(self._last_info)
 
     def _step_oig_plan(self) -> ApproachStepResult[Any]:
@@ -275,27 +283,72 @@ class TampNbvApproach(BaseApproach[Any, Any]):
                 info={"metrics": self.metrics, "mode": "done"},
             )
 
-        if not self._plan_actions:
-            self._replan_for_current_subsequence()
+        subseq_actions, _ = self._oig_subsequences[self._current_subseq_idx]
 
         if not self._plan_actions:
-            self._mode = ExecutionMode.DONE
-            return ApproachStepResult(
-                action=self.system.get_noop_action(),
-                terminate=True,
-                info={
-                    "metrics": self.metrics,
-                    "mode": "done",
-                    "error": "planning_failed",
-                },
+            self.metrics.tamp_replans += 1
+            plan = self.system.plan(seed=self._seed)
+            if plan is None:
+                print(
+                    f"[TAMP] Planning failed for subsequence {self._current_subseq_idx}"
+                )
+                self._mode = ExecutionMode.DONE
+                return ApproachStepResult(
+                    action=self.system.get_noop_action(),
+                    terminate=True,
+                    info={
+                        "metrics": self.metrics,
+                        "mode": "done",
+                        "error": "planning_failed",
+                    },
+                )
+            self._plan_actions = list(plan.actions)
+            self._plan_idx = 0
+            self._is_first_controller_step = True
+            print(
+                f"[TAMP] Plan has {len(self._plan_actions)} actions for subsequence {self._current_subseq_idx}"  # pylint: disable=line-too-long
             )
+
+            self._active_controllers = []
+            get_ctrl = getattr(self.system, "get_grounded_controller", None)
+            if get_ctrl is not None:
+                obs = self.system.env.get_observation()
+                for op_str in subseq_actions:
+                    ctrl = get_ctrl(op_str)
+                    if ctrl is not None:
+                        try:
+                            ctrl.reset_for_checking(plan, obs)
+                            self._active_controllers.append(ctrl)
+                        except TrajectorySamplingFailure:
+                            pass
 
         if self._plan_idx >= len(self._plan_actions):
             print(f"[TAMP] Subsequence {self._current_subseq_idx} complete, advancing")
             self._current_subseq_idx += 1
             self._plan_actions = []
             self._plan_idx = 0
+            self._active_controllers = []
             return self._step_oig_plan()
+
+        if self._active_controllers:
+            if not self._is_first_controller_step:
+                obs = self.system.env.get_observation()
+                for ctrl in self._active_controllers:
+                    ctrl.observe(obs)
+            for ctrl in self._active_controllers:
+                try:
+                    ctrl.step()
+                except TrajectorySamplingFailure as e:
+                    print(
+                        f"[TAMP] Phase failure: {e}, "
+                        f"skipping subsequence {self._current_subseq_idx}"
+                    )
+                    self._current_subseq_idx += 1
+                    self._plan_actions = []
+                    self._plan_idx = 0
+                    self._active_controllers = []
+                    return self._step_oig_plan()
+            self._is_first_controller_step = False
 
         self._mode = ExecutionMode.EXECUTING
         action = self._plan_actions[self._plan_idx]
@@ -309,31 +362,6 @@ class TampNbvApproach(BaseApproach[Any, Any]):
                 "subseq_idx": self._current_subseq_idx,
             },
         )
-
-    def _replan_for_current_subsequence(self) -> None:
-        self._plan_actions = []
-        self._plan_idx = 0
-        self.metrics.tamp_replans += 1
-
-        subseq_actions, _ = self._oig_subsequences[self._current_subseq_idx]
-        net_add, _ = self.system.get_subsequence_effects(subseq_actions)
-
-        print(
-            f"[TAMP] Replanning for subsequence {self._current_subseq_idx} "
-            f"with goal: {net_add}"
-        )
-
-        plan = (
-            self.system.plan_for_goal(net_add, seed=self._seed)
-            if net_add
-            else self.system.plan(seed=self._seed)
-        )
-
-        if plan is not None:
-            self._plan_actions = list(plan.actions)
-            print(f"[TAMP] Plan has {len(self._plan_actions)} actions")
-        else:
-            print("[TAMP] Planning failed")
 
     def get_metrics(self) -> TampNbvMetrics:
         """Get current metrics."""

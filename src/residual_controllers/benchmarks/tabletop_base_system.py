@@ -36,6 +36,7 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         self._nbv_planner: NBVPlanner | None = None
         self._target_object_label: str | None = None
         self.abstractor: TabletopBaseAbstractor | None = None
+        self._last_plan_components: tuple | None = None
         super().__init__(seed=seed)
 
     @abstractmethod
@@ -79,6 +80,7 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         components, skills = self._get_planning_components()
         abstractor = components.abstractor
         _, _, default_goal_atoms = abstractor.reset(obs)
+        self._last_plan_components = (components, skills)
         goal_atoms = (
             goal_atoms_override
             if goal_atoms_override is not None
@@ -217,6 +219,28 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
             return self._run_plan(goal_atoms_override=goal_atoms, seed=seed)
         finally:
             self.env.belief = original_belief
+
+    def get_grounded_controller(self, action_str: str):
+        """Get a low-level controller in the symbolic plan."""
+        if self._last_plan_components is None:
+            return None
+        tokens = action_str.strip("() ").split()
+        if not tokens:
+            return None
+        op_name, obj_names = tokens[0], tokens[1:]
+        components, skills = self._last_plan_components
+        skill = next((s for s in skills if s.operator.name == op_name), None)
+        if skill is None:
+            return None
+        objects_by_name = {
+            obj.name.lower(): obj
+            for obj in components.abstractor._pybullet_ids  # pylint: disable=protected-access
+        }
+        try:
+            objects = [objects_by_name[name.lower()] for name in obj_names]
+        except KeyError:
+            return None
+        return skill.ground(objects).controller
 
     def get_belief(self) -> Belief | None:
         """Return the current belief state."""

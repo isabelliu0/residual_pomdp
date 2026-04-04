@@ -39,7 +39,7 @@ ENV/
 runs/
 logs/
 data/
-trained_models/
+trained_policies/
 videos/
 *.pkl
 *.pt
