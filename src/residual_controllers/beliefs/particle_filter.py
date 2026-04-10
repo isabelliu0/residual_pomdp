@@ -271,13 +271,15 @@ def predict_belief(
     joint_lower_limits: np.ndarray,
     joint_upper_limits: np.ndarray,
     noise_std: float = 0.01,
+    held_object_gt_pose: SE3Pose | None = None,
 ) -> Belief:
     """Predict belief forward after action.
 
     Applies action to joint positions (first 7 joints) and adds control
-    noise. Object poses are unchanged (static objects).
+    noise. Static object poses are unchanged.
     """
     new_particles = []
+    held_label = belief.held_object_label
 
     for particle in belief.particles:
         current_joints = np.array(particle.joint_positions[:7], dtype=np.float32)
@@ -290,10 +292,15 @@ def predict_belief(
 
         full_joints = tuple(noisy_joints) + particle.joint_positions[7:]
 
+        new_object_poses = particle.object_poses.copy()
+        if held_label is not None and held_object_gt_pose is not None:
+            if held_label in new_object_poses:
+                new_object_poses[held_label] = held_object_gt_pose
+
         new_particle = TabletopState(
             joint_positions=full_joints,
             gripper_open=particle.gripper_open,
-            object_poses=particle.object_poses.copy(),
+            object_poses=new_object_poses,
         )
         new_particles.append(new_particle)
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
+from typing import Any
 
 from bilevel_planning.trajectory_samplers.trajectory_sampler import (
     TrajectorySamplingFailure,
@@ -45,28 +47,46 @@ def _parse_operator_name(action_str: str) -> str:
     return tokens[0] if tokens else "unknown"
 
 
-def _execute_plan(system, plan) -> bool:
-    if plan is None:
-        return False
-    terminated = False
-    for action in plan.actions:
-        _, _, terminated, _, _ = system.env.step(action)
-        if terminated:
-            break
-    return terminated
+def _execute_op_with_phase_checks(
+    system, plan: Any, action_str: str, op_goal: set
+) -> tuple[bool, bool, int]:
+    """Execute plan actions for one operator, stopping when op_goal is
+    achieved.
 
-
-def _execute_plan_with_checks(system, plan, action_str: str) -> bool:
-    if plan is None:
-        return False
+    Returns (failure_detected, env_terminated, actions_consumed).
+    """
+    ctrl = None
     get_ctrl = getattr(system, "get_grounded_controller", None)
     if get_ctrl is not None:
-        controller = get_ctrl(action_str)
-        if controller is not None:
-            obs = system.env.get_observation()
-            terminated, _ = execute_plan_with_checks(plan, controller, system.env, obs)
-            return terminated
-    return _execute_plan(system, plan)
+        ctrl = get_ctrl(action_str)
+
+    obs = system.env.get_observation()
+    if ctrl is not None:
+        try:
+            ctrl.reset_for_checking(plan, obs)
+        except TrajectorySamplingFailure:
+            return True, False, 0
+
+    first = True
+    consumed = 0
+    for action in plan.actions:
+        if ctrl is not None:
+            if not first:
+                ctrl.observe(system.env.get_observation())
+            try:
+                ctrl.step()
+            except TrajectorySamplingFailure:
+                return True, False, consumed
+            first = False
+
+        _, _, terminated, _, _ = system.env.step(action)
+        consumed += 1
+        if terminated:
+            return False, True, consumed
+        if _check_operator_success(system, op_goal):
+            return False, False, consumed
+
+    return False, False, consumed
 
 
 def _select_best_viewpoint(system, target_labels: list[str], seed: int | None):
@@ -177,47 +197,65 @@ def collect_episode(
                 episode_op_records: list[OperatorRecord] = []
                 subseq_success = False
 
-                for action in subseq_actions:
-                    op_name = _parse_operator_name(action)
-                    op_goal, _ = system.get_subsequence_effects([action])
+                subseq_goal, _ = system.get_subsequence_effects(subseq_actions)
+                try:
+                    plan = system.plan_for_goal(subseq_goal, seed=seed)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    print(f"  Planning failed for subsequence: {e}, skipping.")
+                    plan = None
 
-                    op_feats = extract_features(
-                        system.env.belief, all_obj_labels, relevant_labels
-                    )
+                if plan is not None:
+                    plan_actions = list(plan.actions)
+                    plan_states = list(plan.states)
+                    action_idx = 0
 
-                    try:
-                        plan_i = system.plan_for_goal(op_goal, seed=seed)
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        print(f"  Planning failed for {op_name}: {e}, skipping.")
-                        break
-                    terminated_i = _execute_plan_with_checks(system, plan_i, action)
-                    success_i = terminated_i or _check_operator_success(system, op_goal)
+                    for action in subseq_actions:
+                        op_name = _parse_operator_name(action)
+                        op_goal, _ = system.get_subsequence_effects([action])
 
-                    print(
-                        f"  Op {op_name}: success={success_i}, "
-                        f"uncertainty={op_feats.relevant_sigma:.8f}"
-                    )
-
-                    episode_op_records.append(
-                        OperatorRecord(
-                            operator_name=op_name,
-                            sequence_name=operator_name,
-                            relevant_object_labels=relevant_labels,
-                            features=op_feats,
-                            success=success_i,
-                            source="nbv",
-                            metadata={
-                                "nbv_steps_requested": n_nbv,
-                                "nbv_steps_done": steps_done,
-                            },
+                        op_feats = extract_features(
+                            system.env.belief, all_obj_labels, relevant_labels
                         )
-                    )
 
-                    if terminated_i:
-                        subseq_success = True
-                        break
-                    if not success_i:
-                        break
+                        op_plan = SimpleNamespace(
+                            actions=plan_actions[action_idx:],
+                            states=plan_states[action_idx:],
+                        )
+                        failure_i, terminated_i, consumed = (
+                            _execute_op_with_phase_checks(
+                                system, op_plan, action, op_goal
+                            )
+                        )
+                        action_idx += consumed
+                        success_i = terminated_i or (
+                            not failure_i and _check_operator_success(system, op_goal)
+                        )
+
+                        print(
+                            f"  Op {op_name}: success={success_i}, "
+                            f"uncertainty={op_feats.relevant_sigma:.8f}"
+                        )
+
+                        episode_op_records.append(
+                            OperatorRecord(
+                                operator_name=op_name,
+                                sequence_name=operator_name,
+                                relevant_object_labels=relevant_labels,
+                                features=op_feats,
+                                success=success_i,
+                                source="nbv",
+                                metadata={
+                                    "nbv_steps_requested": n_nbv,
+                                    "nbv_steps_done": steps_done,
+                                },
+                            )
+                        )
+
+                        if terminated_i:
+                            subseq_success = True
+                            break
+                        if not success_i:
+                            break
 
                 op_records.extend(episode_op_records)
 

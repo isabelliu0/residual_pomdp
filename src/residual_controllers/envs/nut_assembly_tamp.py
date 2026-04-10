@@ -18,7 +18,7 @@ from bilevel_planning.trajectory_samplers.trajectory_sampler import (
     TrajectorySamplingFailure,
 )
 from gymnasium.spaces import Box
-from pybullet_helpers.geometry import Pose, multiply_poses
+from pybullet_helpers.geometry import Pose, get_pose, multiply_poses
 from pybullet_helpers.states import KinematicState
 from relational_structs import (
     GroundAtom,
@@ -30,6 +30,7 @@ from relational_structs import (
 
 from residual_controllers.envs.nut_assembly_env import (
     _NUT_HALF_HEIGHT,
+    _PEG_HEIGHT,
     NutAssemblyScene,
 )
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
@@ -45,6 +46,19 @@ from residual_controllers.envs.tabletop_tamp_base import (
 from residual_controllers.tamp.collision_utils import (
     run_smooth_motion_planning_to_pose_with_surface_check,
 )
+
+_NUT_PEG_XY_THRESH = 0.005
+_NUT_PEG_Z_THRESH = 0.002
+
+
+def _nut_near_peg(nut_pos: np.ndarray, peg_pos: np.ndarray) -> bool:
+    """Return True when nut is within contact range of the peg."""
+    peg_top_z = float(peg_pos[2]) + _PEG_HEIGHT / 2
+    xy_dist = float(np.linalg.norm(nut_pos[:2] - peg_pos[:2]))
+    return (
+        xy_dist < _NUT_PEG_XY_THRESH
+        and float(nut_pos[2]) <= peg_top_z + _NUT_PEG_Z_THRESH
+    )
 
 
 @dataclass
@@ -80,6 +94,21 @@ class NutAssemblyAbstractor(TabletopBaseAbstractor):
         assert isinstance(scene, NutAssemblyScene)
         self._nut_obj = self._movable_objs[scene.nut_idx]
         self._peg_obj = self._movable_objs[scene.peg_idx]
+
+    def _get_on_relations(self, held_id: int | None) -> set[tuple[Object, Object]]:
+        relations = super()._get_on_relations(held_id)
+        if self._nut_obj is None or self._peg_obj is None:
+            return relations
+        nut_id = self._pybullet_ids[self._nut_obj]
+        peg_id = self._pybullet_ids[self._peg_obj]
+        pcid = self.env.physics_client_id
+        if nut_id == held_id:
+            nut_pos = np.array(get_pose(nut_id, pcid).position)
+            peg_pos = np.array(get_pose(peg_id, pcid).position)
+            if _nut_near_peg(nut_pos, peg_pos):
+                relations.add((self._nut_obj, self._peg_obj))
+        relations.add((self._peg_obj, self._table_obj))
+        return relations
 
     def _get_goal_atoms(self) -> set[GroundAtom]:
         assert self._nut_obj is not None and self._peg_obj is not None
@@ -118,7 +147,7 @@ class NutAssemblyAbstractor(TabletopBaseAbstractor):
                 xy_dist = float(
                     np.linalg.norm(nut_pos[:2] - np.array([peg_cx, peg_cy]))
                 )
-                if xy_dist < 1e-3 and abs(nut_pos[2] - _NUT_HALF_HEIGHT) < 1e-3:
+                if xy_dist < 1e-2 and abs(nut_pos[2] - _NUT_HALF_HEIGHT) < 1e-2:
                     atoms.add(
                         GroundAtom(
                             self._nut_predicates.assembled,
@@ -153,6 +182,9 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
         self._assemble_idx: int = 0
         self._drop_idx: int = -1
         self._descent_ee_z: float = 0.0
+        self._descent_nut_z: float = 0.0
+        self._nut_idx: int = -1
+        self._peg_idx: int = -1
         self._action_idx = 0
         self._phase = "pre_assemble"
         self._terminated = False
@@ -205,6 +237,15 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
             )
         self._assemble_idx = max(1, self._drop_idx - 20)
         self._descent_ee_z = float(states[self._drop_idx]["camera_pose"][2])
+        _, nut_obj, peg_obj, _ = self.objects
+        nut_id = self.abstractor.get_pybullet_id(nut_obj)
+        peg_id = self.abstractor.get_pybullet_id(peg_obj)
+        assert self.env.scene is not None
+        self._nut_idx = self.env.scene.object_ids.index(nut_id)
+        self._peg_idx = self.env.scene.object_ids.index(peg_id)
+        self._descent_nut_z = float(
+            states[self._drop_idx]["object_poses"][self._nut_idx, 2]
+        )
         self._plan = [_make_checking_state(s) for s in states]
 
     def terminated(self) -> bool:
@@ -216,8 +257,8 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
     def step(self) -> np.ndarray:
         if self._phase == "check_depth":
             assert self._current_obs is not None
-            curr_ee_z = float(self._current_obs["camera_pose"][2])
-            if curr_ee_z > self._descent_ee_z + 0.005:
+            curr_nut_z = float(self._current_obs["object_poses"][self._nut_idx, 2])
+            if curr_nut_z > self._descent_nut_z + 0.005:
                 raise TrajectorySamplingFailure(
                     "Assemble failed: nut did not reach insertion depth"
                 )
@@ -233,17 +274,15 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
 
         if self._action_idx == self._assemble_idx:
             assert self._current_obs is not None
-            assert self.env.scene is not None
-            ee_xy = np.array(self._current_obs["camera_pose"][:2], dtype=float)
-            _, _, peg_obj, _ = self.objects
-            peg_id = self.abstractor.get_pybullet_id(peg_obj)
-            peg_idx = self.env.scene.object_ids.index(peg_id)
-            peg_xy = np.array(
-                self._current_obs["object_poses"][peg_idx, :2], dtype=float
+            nut_xy = np.array(
+                self._current_obs["object_poses"][self._nut_idx, :2], dtype=float
             )
-            if np.linalg.norm(ee_xy - peg_xy) > 0.0005:
+            peg_xy = np.array(
+                self._current_obs["object_poses"][self._peg_idx, :2], dtype=float
+            )
+            if np.linalg.norm(nut_xy - peg_xy) > 0.004:
                 raise TrajectorySamplingFailure(
-                    "PreAssemble failed: EE not aligned with peg"
+                    "PreAssemble failed: nut not aligned with peg"
                 )
             self._phase = "assemble"
 
@@ -315,15 +354,25 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
         nut_world_z = float(multiply_poses(curr_ee, nut_attachment).position[2])
         grasp_z_offset = float(curr_ee.position[2]) - nut_world_z
         self._descent_ee_z = peg_top_z - grasp_z_offset - 0.015
+        self._descent_nut_z = peg_top_z - 0.015
 
         nut_scene_idx = self.env.scene.object_ids.index(nut_id)
         peg_scene_idx = self.env.scene.object_ids.index(peg_id)
+        self._nut_idx = nut_scene_idx
+        self._peg_idx = peg_scene_idx
         nut_xy = obs_poses[nut_scene_idx, :2]
         peg_xy = obs_poses[peg_scene_idx, :2]
-        already_aligned = float(np.linalg.norm(nut_xy - peg_xy)) < 1e-3
+        nut_z = float(obs_poses[nut_scene_idx, 2])
+        already_aligned = float(np.linalg.norm(nut_xy - peg_xy)) < 0.005  # NOTE
+        already_inserted = already_aligned and nut_z <= self._descent_nut_z
+        # print(
+        #     f"  Dist: {np.linalg.norm(nut_xy - peg_xy):.6f}, Nut xy: {nut_xy}, "
+        #     f"Peg xy: {peg_xy}, nut_z: {nut_z:.4f}, peg_top_z: {peg_top_z:.4f}, "
+        #     f"already_aligned: {already_aligned}, already_inserted: {already_inserted}"
+        # )
 
         if not already_aligned:
-            approach_pose = Pose((peg_cx, peg_cy, peg_top_z + 0.02), down_quat)
+            approach_pose = Pose((peg_cx, peg_cy, peg_top_z + 0.012), down_quat)
             state.set_pybullet(self.env.robot)
             motion_plan = run_smooth_motion_planning_to_pose_with_surface_check(
                 approach_pose,
@@ -349,7 +398,9 @@ class AssembleGroundController(GroundParameterizedController[dict, np.ndarray]):
         fixed_y = float(curr_ee.position[1])
         start_z = float(curr_ee.position[2])
 
-        for z in np.linspace(start_z, self._descent_ee_z, 21)[1:]:
+        for z in (
+            [] if already_inserted else np.linspace(start_z, self._descent_ee_z, 21)[1:]
+        ):
             ik = p.calculateInverseKinematics(
                 self.env.robot.robot_id,
                 self.env.robot.end_effector_id,
@@ -407,6 +458,7 @@ def create_nut_assembly_operators(
         },
         delete_effects={
             LiftedAtom(predicates.holding, [robot, nut]),
+            LiftedAtom(predicates.on, [nut, peg]),
         },
     )
 

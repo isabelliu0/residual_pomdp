@@ -19,7 +19,7 @@ _ASSETS_DIR = Path(__file__).parent / "assets"
 _NUT_URDF_PATH = _ASSETS_DIR / "round-nut.urdf"
 _TEXTURE_PATH = _ASSETS_DIR / "steel-scratched.png"
 
-_PEG_RADIUS = 0.015  # nut inner radius ~0.0156m -> ~0.6mm clearance each side
+_PEG_RADIUS = 0.013  # nut inner radius ~0.0156m -> ~2.6mm clearance each side
 _PEG_HEIGHT = 0.1
 _NUT_HALF_HEIGHT = 0.005
 
@@ -196,6 +196,11 @@ class NutAssemblyEnv(TabletopBaseEnv):
     def _get_movable_object_ids(self) -> list[int]:
         return [self._nut_id]
 
+    def _get_grasp_finger_width(self, obj_id: int, aabb_half_width: float) -> float:
+        if obj_id == self._nut_id:
+            return 0.02123  # actual flat-face half-width from nut center
+        return aabb_half_width
+
     def _get_excluded_aabbs(self) -> list[tuple[float, float, float, float]]:
         return []
 
@@ -340,8 +345,10 @@ class NutAssemblyEnv(TabletopBaseEnv):
         peg_cy = (float(peg_aabb[0][1]) + float(peg_aabb[1][1])) / 2
         peg_top_z = float(peg_aabb[1][2])
         xy_dist = float(np.linalg.norm(nut_pos[:2] - np.array([peg_cx, peg_cy])))
-        if xy_dist > 0.005 or nut_pos[2] > peg_top_z + 0.002:
+        # print(f"xy_dist={xy_dist:.8f}, z_dist={nut_pos[2] - peg_top_z:.8f}")
+        if xy_dist > 0.004 or nut_pos[2] > peg_top_z + 0.006:
             return
+        # print(f"Nut is in contact with peg! Collapsing belief particles")
         nut_gt = get_pose(self._nut_id, self.physics_client_id)
         peg_gt = get_pose(self._peg_id, self.physics_client_id)
         nut_pose_gt: tuple = nut_gt.position + nut_gt.orientation

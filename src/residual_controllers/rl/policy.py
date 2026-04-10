@@ -6,9 +6,30 @@ from typing import Literal
 
 import gymnasium as gym
 import numpy as np
+import torch
 from gymnasium import spaces
 from stable_baselines3 import DDPG, TD3
 from stable_baselines3.common.noise import NormalActionNoise
+
+
+class _DummyEnv(gym.Env):  # pylint: disable=abstract-method
+    """Module-level dummy env for SB3 policy initialization (must be
+    picklable)."""
+
+    def __init__(self, obs_dim: int, act_dim: int) -> None:
+        super().__init__()
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+        )
+        self.action_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(act_dim,), dtype=np.float32
+        )
+
+    def reset(self, **kwargs):  # pylint: disable=unused-argument
+        return self.observation_space.sample(), {}
+
+    def step(self, action):
+        return self.observation_space.sample(), 0.0, False, False, {}
 
 
 class RLPolicy:
@@ -25,30 +46,14 @@ class RLPolicy:
         buffer_size: int = 100000,
         device: str = "cpu",
         seed: int = 0,
+        action_scale: float = 1.0,
+        zero_init_actor: bool = False,
     ) -> None:
         self.observation_dim = observation_dim
         self.action_dim = action_dim
+        self.action_scale = action_scale
 
-        class DummyEnv(gym.Env):  # pylint: disable=abstract-method
-            """Dummy gym environment with correct observation and action spaces
-            for policy initialization."""
-
-            def __init__(self, obs_dim: int, act_dim: int) -> None:
-                super().__init__()
-                self.observation_space = spaces.Box(
-                    low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
-                )
-                self.action_space = spaces.Box(
-                    low=-1.0, high=1.0, shape=(act_dim,), dtype=np.float32
-                )
-
-            def reset(self, **kwargs):  # pylint: disable=unused-argument
-                return self.observation_space.sample(), {}
-
-            def step(self, action):
-                return self.observation_space.sample(), 0.0, False, False, {}
-
-        dummy_env = DummyEnv(observation_dim, action_dim)
+        dummy_env = _DummyEnv(observation_dim, action_dim)
         action_noise = NormalActionNoise(
             mean=np.zeros(action_dim, dtype=np.float32),
             sigma=np.ones(action_dim, dtype=np.float32) * noise_std,
@@ -66,13 +71,41 @@ class RLPolicy:
             verbose=0,
         )
 
-    def predict(
-        self, observation: np.ndarray, deterministic: bool = True
-    ) -> np.ndarray:
-        """Predict action given observation."""
+        if zero_init_actor:
+            for net in (self.model.actor.mu, self.model.actor_target.mu):
+                for module in reversed(list(net.modules())):
+                    if isinstance(module, torch.nn.Linear):
+                        with torch.no_grad():
+                            module.weight.zero_()
+                            module.bias.zero_()
+                        break
+
+        self.model._setup_learn(total_timesteps=100_000_000)
+
+    def predict(self, observation: np.ndarray) -> np.ndarray:
+        """Predict action deterministically (inference only).
+
+        Returns unscaled action in [-1, 1]. Multiply by action_scale
+        before sending to the environment.
+        """
         obs = np.asarray(observation, dtype=np.float32).reshape(1, -1)
-        action, _ = self.model.predict(obs, deterministic=deterministic)
+        action, _ = self.model.predict(obs, deterministic=True)
         return np.asarray(action, dtype=np.float32).flatten()
+
+    def sample_action(self, observation: np.ndarray) -> np.ndarray:
+        """Sample action with exploration noise for training.
+
+        Returns unscaled action in [-1, 1] suitable for storing in the
+        replay buffer. Multiply by action_scale before sending to the
+        environment.
+        """
+        obs = np.asarray(observation, dtype=np.float32).reshape(1, -1)
+        action, _ = self.model.predict(obs, deterministic=True)
+        action = np.asarray(action, dtype=np.float32).flatten()
+        if self.model.action_noise is not None:
+            noise = self.model.action_noise()
+            action = np.clip(action + noise, -1.0, 1.0)
+        return action
 
     def add_to_replay_buffer(
         self,

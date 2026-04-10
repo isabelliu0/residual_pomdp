@@ -24,7 +24,7 @@ from residual_controllers.beliefs import (
     update_belief,
     update_belief_from_contact,
 )
-from residual_controllers.beliefs.structs import Belief, BeliefConfig
+from residual_controllers.beliefs.structs import Belief, BeliefConfig, SE3Pose
 
 
 @dataclass
@@ -280,12 +280,19 @@ class TabletopBaseEnv(gym.Env, ABC):
             )
             self.belief.held_object_label = held_label
 
+            held_gt_pose: SE3Pose | None = None
+            if self._held_object_id is not None:
+                held_world = get_pose(self._held_object_id, self.physics_client_id)
+                held_gt_pose = cast(
+                    SE3Pose, tuple(held_world.position) + tuple(held_world.orientation)
+                )
             self.belief = predict_belief(
                 self.belief,
                 joint_delta,
                 np.array(self.robot.joint_lower_limits[:7]),
                 np.array(self.robot.joint_upper_limits[:7]),
                 noise_std=0.01,
+                held_object_gt_pose=held_gt_pose,
             )
 
             camera_image = self.get_camera_image()
@@ -445,13 +452,22 @@ class TabletopBaseEnv(gym.Env, ABC):
             )
             set_pose(obj_id, centered_pose, self.physics_client_id)
 
+            finger_width = self._get_grasp_finger_width(obj_id, half_width)
             self._gripper_finger_width = float(
-                np.clip(half_width, 0.0, self.robot.open_fingers_state)
+                np.clip(finger_width, 0.0, self.robot.open_fingers_state)
             )
 
             self._held_object_id = obj_id
             self._grasp_transform = multiply_poses(ee_pose.invert(), centered_pose)
             break
+
+    def _get_grasp_finger_width(self, obj_id: int, aabb_half_width: float) -> float:
+        """Return finger width to use when grasping obj_id.
+
+        Override in subclasses.
+        """
+        del obj_id
+        return aabb_half_width
 
     def _update_held_object_pose(self) -> None:
         """Update the pose of the held object to follow the robot's end

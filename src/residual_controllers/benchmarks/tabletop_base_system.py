@@ -88,8 +88,37 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         )
         goal = abstractor.create_abstract_goal(goal_atoms, abstractor.step)
 
+        obs_poses = obs.get("object_poses")
+        obs_joints = list(obs.get("joint_positions", []))
+        obs_held_idx = int(obs.get("held_object_idx", np.array([-1]))[0])
+
         def transition_fn(_obs: dict, action: np.ndarray) -> dict:
             """Transition function for planning."""
+            if _obs is obs:
+                # New trajectory attempt: restore plan_env to initial state so
+                # each sampling attempt starts from the same configuration.
+                assert self._plan_env is not None
+                assert self._plan_env.scene is not None
+                if obs_poses is not None:
+                    for i, obj_id in enumerate(self._plan_env.scene.object_ids):
+                        if i < len(obs_poses):
+                            set_pose(
+                                obj_id,
+                                Pose(
+                                    position=tuple(obs_poses[i, :3]),
+                                    orientation=tuple(obs_poses[i, 3:]),
+                                ),
+                                self._plan_env.physics_client_id,
+                            )
+                if obs_joints:
+                    self._plan_env.robot.set_joints(obs_joints)
+                if obs_held_idx >= 0:
+                    self._plan_env.held_object_id = self._plan_env.scene.object_ids[
+                        obs_held_idx
+                    ]
+                else:
+                    self._plan_env.held_object_id = None
+                    self._plan_env.grasp_transform = None
             next_obs, _, _, _, _ = self._plan_env.step(action)  # type: ignore[union-attr]  # pylint: disable=line-too-long
             return next_obs
 
@@ -100,7 +129,7 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
             goal=goal,
             state_abstractor=components.abstractor.step,
             transition_function=transition_fn,
-            timeout=60.0,
+            timeout=90.0,
             seed=seed or 0,
         )
         return plan
@@ -140,6 +169,20 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         assert self.env.scene is not None
 
         self._plan_env.robot.set_joints(list(self.env.robot.get_joint_positions()))
+
+        held_label = (
+            self.env.scene.id_to_label.get(self.env.held_object_id)
+            if self.env.held_object_id is not None
+            else None
+        )
+        if held_label is not None:
+            self._plan_env.held_object_id = self._plan_env.scene.label_to_id.get(
+                held_label
+            )
+            self._plan_env.grasp_transform = self.env.grasp_transform
+        else:
+            self._plan_env.held_object_id = None
+            self._plan_env.grasp_transform = None
 
         self._sync_extra_scene_objects()
 
