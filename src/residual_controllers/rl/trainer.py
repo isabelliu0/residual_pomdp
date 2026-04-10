@@ -29,6 +29,32 @@ class RLTrainer:
         self.num_updates = 0
         self.metrics_history: list[dict[str, float]] = []
 
+    def compute_sigma_reward(
+        self,
+        sigma_prev: float,
+        sigma_curr: float,
+        sigma_thresh: float,
+        sigma_0: float,
+        action: np.ndarray | None = None,
+        action_penalty_coef: float = 0.05,
+    ) -> float:
+        """Shaped reward for uncertainty-reduction tasks.
+
+        Dense term: normalised reduction in sigma this step, clipped to
+        [-1, 1]. Goal bonus: +10 when sigma_curr <= sigma_thresh.
+        Action penalty: -action_penalty_coef * ||action||^2 on the
+        unscaled action in [-1, 1]^n, encouraging local recovery motions.
+        """
+        gap_total = max(sigma_0 - sigma_thresh, 1e-8)
+        dense = float(np.clip((sigma_prev - sigma_curr) / gap_total, -1.0, 1.0))
+        goal_bonus = 10.0 if sigma_curr <= sigma_thresh else 0.0
+        action_penalty = (
+            action_penalty_coef * float(np.dot(action, action))
+            if action is not None
+            else 0.0
+        )
+        return dense + goal_bonus - action_penalty
+
     def store_transition(
         self,
         obs: np.ndarray,

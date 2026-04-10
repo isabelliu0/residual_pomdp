@@ -88,8 +88,8 @@ class BeliefConfig:
     detection_pos_std: float = 0.01
     detection_distance_ref: float = 0.5
     # Per-pixel noise std (pixels) for pointcloud PCA detection.
-    # On a small surface of 500 pixels, pixel_noise_std=150 gives ~6 px centroid std.
-    pixel_noise_std: float = 150.0
+    # On a small surface of 500 pixels, pixel_noise_std=300 gives ~13 px centroid std.
+    pixel_noise_std: float = 300.0
 
     # Pose injection from detections
     pose_injection_pos_std: float = 0.01
