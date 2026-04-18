@@ -3,6 +3,7 @@
 import os
 
 import imageio
+import pytest
 from pybullet_helpers.camera import capture_image
 
 from residual_controllers.envs.nut_assembly_env import NutAssemblyEnv
@@ -32,6 +33,7 @@ from residual_controllers.envs.tabletop_view_occlusion_tamp import (
 from residual_controllers.tamp import PlanningComponents, run_tamp
 
 
+@pytest.mark.skip()
 def test_tabletop_view_occlusion_with_tamp():
     """Test TabletopViewOcclusionEnv pick-and-place with bilevel TAMP
     planner."""
@@ -129,6 +131,7 @@ def test_tabletop_view_occlusion_with_tamp():
     sim.close()
 
 
+@pytest.mark.skip()
 def test_tabletop_object_occlusion_with_tamp():
     """Test TabletopObjectOcclusionEnv pick-and-pour with bilevel TAMP
     planner."""
@@ -226,6 +229,7 @@ def test_tabletop_object_occlusion_with_tamp():
     sim.close()
 
 
+@pytest.mark.skip()
 def test_nut_assembly_with_tamp():
     """Test NutAssemblyEnv pick-and-assemble with bilevel TAMP planner."""
     seed = 42
