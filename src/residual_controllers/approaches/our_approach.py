@@ -230,9 +230,10 @@ class TampNbvApproach(BaseApproach[Any, Any]):
             )
             self._nbv_state.trajectory = self.system.plan_to_viewpoint(viewpoint)
             self._nbv_state.trajectory_idx = 0
-            assert (
-                len(self._nbv_state.trajectory) >= 2
-            ), "Trajectory must have at least 2 waypoints"
+            if len(self._nbv_state.trajectory) < 2:
+                print("[NBV] Motion planning to viewpoint failed, exiting NBV")
+                self.metrics.nbv_early_termination += 1
+                return self._exit_nbv_and_execute()
             print(
                 f"[NBV] Selected viewpoint {self._nbv_state.viewpoints_visited}, "
                 f"IG={self._nbv_state.last_info_gain:.1f}, "
@@ -269,10 +270,11 @@ class TampNbvApproach(BaseApproach[Any, Any]):
 
     def _exit_nbv_and_execute(self) -> ApproachStepResult[Any]:
         self._nbv_state = None
+        self._mode = ExecutionMode.PLANNING
         self._plan_actions = []
         self._plan_idx = 0
         self._active_controllers = []
-        return self._decide_next_action(self._last_info)
+        return self._step_oig_plan()
 
     def _step_oig_plan(self) -> ApproachStepResult[Any]:
         if self._current_subseq_idx >= len(self._oig_subsequences):

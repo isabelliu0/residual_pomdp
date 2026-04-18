@@ -72,6 +72,7 @@ def detect_objects_from_pointcloud_pca(
     top_face_initial_fraction: float = 0.25,
     top_face_inlier_distance: float = 0.005,
     pixel_noise_std: float = 0.0,
+    yaw_offsets: dict[str, float] | None = None,
 ) -> dict[str, tuple[tuple[float, ...], float]]:
     """Detect objects via point-cloud PCA on the visible top face.
 
@@ -133,6 +134,8 @@ def detect_objects_from_pointcloud_pca(
         eigenvalues, eigenvectors = np.linalg.eigh(cov)
         principal = eigenvectors[:, np.argmax(eigenvalues)]
         yaw = float(np.arctan2(principal[1], principal[0]))
+        if yaw_offsets:
+            yaw += yaw_offsets.get(label, 0.0)
 
         # NOTE: Shift the centroid in pixel space by a single correlated draw
         # scaled by 1/sqrt(N_top_face_pixels): pixel_noise_std is the per-pixel

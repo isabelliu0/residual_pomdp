@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
+import pybullet as p
 from bilevel_planning.structs import (
     GroundParameterizedController,
     LiftedOperator,
@@ -42,7 +43,6 @@ from residual_controllers.envs.tabletop_tamp_base import (
 from residual_controllers.envs.tabletop_view_occlusion import (
     TabletopViewOcclusionScene,
 )
-from residual_controllers.geometry import get_half_extents_from_aabb
 
 if TYPE_CHECKING:
     from residual_controllers.envs.tabletop_base import TabletopBaseEnv
@@ -110,9 +110,8 @@ class TabletopAbstractor(TabletopBaseAbstractor):
             obj1_id = self._pybullet_ids[obj1]
             if obj1_id == held_id:
                 continue
-            pose1 = get_pose(obj1_id, pcid)
-            half1 = get_half_extents_from_aabb(obj1_id, pcid)
-            obj1_bottom_z = pose1.position[2] - half1[2]
+            aabb1 = p.getAABB(obj1_id, physicsClientId=pcid)
+            obj1_bottom_z = float(aabb1[0][2])
 
             for obj2 in lower_candidates:
                 if obj1 == obj2:
@@ -120,21 +119,18 @@ class TabletopAbstractor(TabletopBaseAbstractor):
                 if obj2 == self._table_obj and obj1 in on_target_area:
                     continue
                 obj2_id = self._pybullet_ids[obj2]
-                pose2 = get_pose(obj2_id, pcid)
-                half2 = get_half_extents_from_aabb(obj2_id, pcid)
-                obj2_top_z = pose2.position[2] + half2[2]
+                aabb2 = p.getAABB(obj2_id, physicsClientId=pcid)
+                obj2_top_z = float(aabb2[1][2])
 
                 if abs(obj1_bottom_z - obj2_top_z) >= 0.005:
                     continue
 
                 if obj2 == self._target_area_obj and obj1 in self._movable_objs:
-                    block_x, block_y = pose1.position[0], pose1.position[1]
-                    ta_x, ta_y = pose2.position[0], pose2.position[1]
                     if (
-                        block_x - half1[0] >= ta_x - half2[0]
-                        and block_x + half1[0] <= ta_x + half2[0]
-                        and block_y - half1[1] >= ta_y - half2[1]
-                        and block_y + half1[1] <= ta_y + half2[1]
+                        aabb1[0][0] >= aabb2[0][0]
+                        and aabb1[1][0] <= aabb2[1][0]
+                        and aabb1[0][1] >= aabb2[0][1]
+                        and aabb1[1][1] <= aabb2[1][1]
                     ):
                         on_relations.add((obj1, obj2))
                         on_target_area.add(obj1)

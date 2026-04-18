@@ -105,6 +105,9 @@ class BeliefConfig:
         """Return the n-fold symmetry for a specific label."""
         return self.label_n_fold.get(label, self.n_fold_symmetry)
 
+    fixed_orientation_labels: set[str] = field(default_factory=set)
+    label_yaw_offset: dict[str, float] = field(default_factory=dict)
+
     # Contact-based pose blending: alpha used when gripper touches an object.
     contact_alpha: float = 0.8
 

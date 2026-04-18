@@ -8,15 +8,22 @@ from typing import Any
 import numpy as np
 import pybullet as p
 from bilevel_planning.structs import LiftedSkill, Plan
-from pybullet_helpers.geometry import Pose, get_pose, set_pose
+from pybullet_helpers.geometry import Pose, get_pose, multiply_poses, set_pose
 
 from residual_controllers.beliefs import get_best_particle_state
 from residual_controllers.beliefs.structs import Belief
 from residual_controllers.benchmarks.base_env import BaseTAMPSystem
 from residual_controllers.envs.tabletop_base import TabletopBaseEnv
 from residual_controllers.envs.tabletop_tamp_base import TabletopBaseAbstractor
+from residual_controllers.geometry import invert_pose
 from residual_controllers.information_gathering import NBVPlanner
-from residual_controllers.information_gathering.nbv_planner import ViewpointCandidate
+from residual_controllers.information_gathering.nbv_planner import (
+    ViewpointCandidate,
+    compute_object_target_center,
+)
+from residual_controllers.tamp.collision_utils import (
+    run_smooth_motion_planning_to_pose_with_surface_check,
+)
 from residual_controllers.tamp.pddl_utils import (
     compute_subsequence_effects,
     run_symbolic_planner,
@@ -37,6 +44,7 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         self._target_object_label: str | None = None
         self.abstractor: TabletopBaseAbstractor | None = None
         self._last_plan_components: tuple | None = None
+        self._nbv_debug_ids: list[int] = []
         super().__init__(seed=seed)
 
     @abstractmethod
@@ -51,17 +59,21 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
 
     def _on_reset(self, _obs: dict, info: dict[str, Any]) -> None:
         self._target_object_label = info.get("target_object_label")
+        if self._plan_env is None:
+            self._plan_env = self._create_plan_env()
+            self._plan_env.reset(seed=self._seed)
+        assert self._plan_env is not None
+        assert self._plan_env.scene is not None
         self._nbv_planner = NBVPlanner(
-            robot=self.env.robot,
+            robot=self._plan_env.robot,
             camera_intrinsics=self.env.camera_intrinsics,
             camera_to_ee_transform=self.env.camera_to_ee_transform,
             n_viewpoint_samples=50,
             radius_range=(0.25, 0.35),
             elevation_range=(0.6, 1.3),
+            object_ids=set(self._plan_env.scene.object_ids),
+            physics_client_id=self._plan_env.physics_client_id,
         )
-        if self._plan_env is None:
-            self._plan_env = self._create_plan_env()
-            self._plan_env.reset(seed=self._seed)
 
     def get_noop_action(self) -> np.ndarray:
         return np.zeros(8, dtype=np.float32)
@@ -308,21 +320,91 @@ class TabletopBaseSystem(BaseTAMPSystem[dict, np.ndarray]):
         belief = self.get_belief()
         if belief is None:
             return None
-        return self._nbv_planner.plan_for_object(
+        self._build_plan_obs_from_belief(belief)
+        candidate = self._nbv_planner.plan_for_object(
             belief=belief, object_label=target_label, z_range=(0.0, 0.1), seed=seed
         )
+        if self.gui and candidate is not None:
+            self._draw_nbv_markers(belief, target_label, candidate)
+        return candidate
 
-    def plan_to_viewpoint(
-        self, viewpoint: ViewpointCandidate, n_waypoints: int = 20
-    ) -> list[np.ndarray]:
-        """Plan a trajectory of low-level actions to reach the given
-        viewpoint."""
-        current_joints = np.array(self.env.robot.get_joint_positions()[:7])
-        target_joints = np.array(viewpoint.joint_config[:7])
-        return [
-            (1 - i / n_waypoints) * current_joints + (i / n_waypoints) * target_joints
-            for i in range(n_waypoints + 1)
-        ]
+    def _draw_nbv_markers(
+        self,
+        belief: Belief,
+        target_label: str,
+        candidate: ViewpointCandidate,
+    ) -> None:
+        pcid = self.env.physics_client_id
+        for item_id in self._nbv_debug_ids:
+            p.removeUserDebugItem(item_id, physicsClientId=pcid)
+        self._nbv_debug_ids.clear()
+
+        centroid = compute_object_target_center(
+            belief, target_label, z_range=(0.0, 0.1)
+        )
+        vp = np.array(candidate.pose.position)
+        r = 0.02
+
+        def _cross(pos: np.ndarray, color: list[float]) -> None:
+            for axis in np.eye(3):
+                self._nbv_debug_ids.append(
+                    p.addUserDebugLine(
+                        (pos - r * axis).tolist(),
+                        (pos + r * axis).tolist(),
+                        color,
+                        lineWidth=3,
+                        physicsClientId=pcid,
+                    )
+                )
+
+        _cross(vp, [0.0, 0.0, 1.0])
+        if centroid is not None:
+            _cross(centroid, [1.0, 0.0, 0.0])
+            self._nbv_debug_ids.append(
+                p.addUserDebugLine(
+                    centroid.tolist(),
+                    vp.tolist(),
+                    [0.0, 1.0, 0.0],
+                    lineWidth=2,
+                    physicsClientId=pcid,
+                )
+            )
+
+    def plan_to_viewpoint(self, viewpoint: ViewpointCandidate) -> list[np.ndarray]:
+        """Plan a collision-free trajectory to reach the given viewpoint."""
+        self._build_plan_obs_from_belief(self.env.belief)
+        assert self._plan_env is not None
+        assert self._plan_env.scene is not None
+
+        ee_pose = viewpoint.pose
+        if (
+            self._nbv_planner is not None
+            and self._nbv_planner.camera_to_ee_transform is not None
+        ):
+            ee_pose = multiply_poses(
+                viewpoint.pose, invert_pose(self._nbv_planner.camera_to_ee_transform)
+            )
+
+        collision_ids = set(self._plan_env.scene.object_ids)
+        if self._plan_env.held_object_id is not None:
+            collision_ids.discard(self._plan_env.held_object_id)
+        plan = run_smooth_motion_planning_to_pose_with_surface_check(
+            ee_pose,
+            self._plan_env.robot,
+            collision_ids=collision_ids,
+            surface_id=self._plan_env.scene.table_id,
+            end_effector_frame_to_plan_frame=Pose.identity(),
+            seed=self._seed or 0,
+            max_candidate_plans=1,
+            birrt_num_attempts=10,
+            birrt_num_iters=200,
+        )
+
+        if plan is None:
+            print("[plan_to_viewpoint] Motion planning failed for viewpoint")
+            return []
+
+        return [np.array(joints[:7]) for joints in plan]
 
     def action_from_trajectory(
         self, current_waypoint: np.ndarray, next_waypoint: np.ndarray

@@ -36,7 +36,6 @@ from residual_controllers.beliefs.structs import TabletopState
 from residual_controllers.envs.tabletop_manipulation import (
     get_kinematic_plan_to_pick_object,
 )
-from residual_controllers.geometry import get_half_extents_from_aabb
 from residual_controllers.tamp.structs import (
     BeliefAbstractor,
     PredicateContainer,
@@ -135,16 +134,12 @@ class TabletopBaseAbstractor(BeliefAbstractor[dict]):
             obj1_id = self._pybullet_ids[obj1]
             if obj1_id == held_id:
                 continue
-            pose1 = get_pose(obj1_id, pcid)
-            half1 = get_half_extents_from_aabb(obj1_id, pcid)
-            obj1_bottom_z = pose1.position[2] - half1[2]
+            obj1_bottom_z = float(p.getAABB(obj1_id, physicsClientId=pcid)[0][2])
             for obj2 in lower_candidates:
                 if obj1 == obj2:
                     continue
                 obj2_id = self._pybullet_ids[obj2]
-                pose2 = get_pose(obj2_id, pcid)
-                half2 = get_half_extents_from_aabb(obj2_id, pcid)
-                obj2_top_z = pose2.position[2] + half2[2]
+                obj2_top_z = float(p.getAABB(obj2_id, physicsClientId=pcid)[1][2])
                 if abs(obj1_bottom_z - obj2_top_z) >= 0.005:
                     continue
                 if check_body_collisions(
