@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 
 import numpy as np
+import pybullet as p
 from pybullet_helpers.geometry import Pose, multiply_poses
 from pybullet_helpers.inverse_kinematics import (
     InverseKinematicsError,
@@ -21,6 +22,7 @@ def sample_hemisphere_viewpoints(
     radius_range: tuple[float, float] = (0.25, 0.45),
     n_samples: int = 50,
     elevation_range: tuple[float, float] = (0.6, 1.3),
+    elevation_top_bias: float = 2.0,
     seed: int | None = None,
 ) -> list[Pose]:
     """Sample viewpoints on a hemisphere looking at center point."""
@@ -29,7 +31,8 @@ def sample_hemisphere_viewpoints(
     viewpoints = []
     for _ in range(n_samples):
         azimuth = rng.uniform(0, 2 * np.pi)
-        elevation = rng.uniform(*elevation_range)
+        u = rng.uniform(0, 1) ** (1.0 / elevation_top_bias)
+        elevation = elevation_range[0] + (elevation_range[1] - elevation_range[0]) * u
         radius = rng.uniform(*radius_range)
 
         x = center[0] + radius * np.cos(elevation) * np.cos(azimuth)
@@ -63,6 +66,9 @@ def filter_reachable_viewpoints(
     viewpoints: list[Pose],
     robot: SingleArmPyBulletRobot,
     camera_to_ee_transform: Pose | None = None,
+    object_ids: set[int] | None = None,
+    min_clearance: float = 0.05,
+    physics_client_id: int = 0,
 ) -> list[tuple[Pose, tuple[float, ...]]]:
     """Filter viewpoints to those reachable by the robot.
 
@@ -70,9 +76,9 @@ def filter_reachable_viewpoints(
         viewpoints: List of desired camera poses.
         robot: Robot to check IK for.
         camera_to_ee_transform: Transform from end-effector to camera.
-            If provided, viewpoints are treated as camera poses and converted
-            to end-effector poses for IK. If None, viewpoints are treated as
-            end-effector poses directly.
+        object_ids: Object IDs to check clearance against.
+        min_clearance: Minimum distance from any object's AABB.
+        physics_client_id: PyBullet physics client ID for AABB queries.
     """
     reachable = []
 
@@ -80,6 +86,20 @@ def filter_reachable_viewpoints(
         ee_to_camera_inv = invert_pose(camera_to_ee_transform)
 
     for camera_pose in viewpoints:
+        pos = np.array(camera_pose.position)
+
+        if object_ids is not None:
+            too_close = False
+            for oid in object_ids:
+                aabb_min, aabb_max = p.getAABB(oid, physicsClientId=physics_client_id)
+                expanded_min = np.array(aabb_min) - min_clearance
+                expanded_max = np.array(aabb_max) + min_clearance
+                if np.all(pos >= expanded_min) and np.all(pos <= expanded_max):
+                    too_close = True
+                    break
+            if too_close:
+                continue
+
         if camera_to_ee_transform is not None:
             ee_pose = multiply_poses(camera_pose, ee_to_camera_inv)
         else:

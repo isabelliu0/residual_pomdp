@@ -15,6 +15,9 @@ from residual_controllers.beliefs.perception import (
     transform_point,
 )
 from residual_controllers.beliefs.structs import CameraIntrinsics
+from residual_controllers.envs.tabletop_object_occlusion import (
+    TabletopObjectOcclusionEnv,
+)
 from residual_controllers.envs.tabletop_view_occlusion import TabletopViewOcclusionEnv
 
 
@@ -353,4 +356,39 @@ def test_pca_6d_pose_vs_gt():
 
     assert found_any, "No visible objects with sufficient top-face points"
     print(f"\n{'='*60}\n")
+    env.close()
+
+
+def test_cereal_box_pca_long_axis_along_y():
+    """Verify PCA orientation estimate: Cereal box."""
+    env = TabletopObjectOcclusionEnv(gui=False)
+    env.reset(seed=0)
+    pcid = env.physics_client_id
+    cereal_id = env._cereal_box_id  # pylint: disable=protected-access
+
+    aabb_min, aabb_max = p.getAABB(cereal_id, physicsClientId=pcid)
+    width_x = float(aabb_max[0] - aabb_min[0])
+    length_y = float(aabb_max[1] - aabb_min[1])
+
+    assert (
+        length_y > width_x
+    ), f"Expected cereal box longer along Y (length_y={length_y:.3f}) than X (width_x={width_x:.3f})"  # pylint: disable=line-too-long
+
+    rng = np.random.default_rng(0)
+    n = 500
+    xs = rng.uniform(float(aabb_min[0]), float(aabb_max[0]), n)
+    ys = rng.uniform(float(aabb_min[1]), float(aabb_max[1]), n)
+    pts_2d = np.column_stack([xs, ys])
+
+    yaw_est = _pca_yaw(pts_2d)
+    yaw_err = _min_yaw_error(yaw_est, np.pi / 2, n_fold=2)
+
+    print(
+        f"\nCereal box: X-width={width_x:.3f} m, Y-length={length_y:.3f} m"
+        f"  PCA yaw={np.degrees(yaw_est):.1f}°  err(2-fold)={np.degrees(yaw_err):.1f}°"
+    )
+    assert yaw_err < np.radians(
+        5
+    ), f"PCA long axis {np.degrees(yaw_est):.1f}° should be ≈ ±90° (along Y), err={np.degrees(yaw_err):.1f}°"  # pylint: disable=line-too-long
+
     env.close()

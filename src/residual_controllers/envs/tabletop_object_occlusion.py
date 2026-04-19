@@ -14,6 +14,7 @@ from pybullet_helpers.link import get_link_pose
 from pybullet_helpers.robots.single_arm import FingeredSingleArmPyBulletRobot
 from tomsgeoms2d.structs import Circle
 
+from residual_controllers.beliefs.structs import BeliefConfig
 from residual_controllers.envs.objaverse_utils import (
     get_resting_z,
     load_objaverse_object,
@@ -197,11 +198,23 @@ class TabletopObjectOcclusionEnv(TabletopBaseEnv):
             id_to_label=self._id_to_label,
         )
 
+    def get_belief_config(self) -> BeliefConfig:
+        return BeliefConfig(
+            label_yaw_offset={"CEREAL": -np.pi / 2},
+            label_n_fold={"CEREAL": 2},
+            fixed_orientation_labels={"MILK"},
+        )
+
     def _get_label_to_id(self) -> dict[str, int]:
         return self._label_to_id
 
     def _get_movable_object_ids(self) -> list[int]:
         return self._object_ids
+
+    def _get_grasp_finger_width(self, obj_id: int, aabb_half_width: float) -> float:
+        if obj_id == self._milk_carton_id:
+            return 0.01
+        return aabb_half_width
 
     def _get_excluded_aabbs(self) -> list[tuple[float, float, float, float]]:
         return []

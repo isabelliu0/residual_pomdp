@@ -206,8 +206,12 @@ class NBVPlanner:
         n_viewpoint_samples: int = 50,
         radius_range: tuple[float, float] = (0.25, 0.35),
         elevation_range: tuple[float, float] = (0.6, 1.3),
+        elevation_top_bias: float = 2.0,
         max_range: float = 1.0,
         ray_stride: int = 10,
+        object_ids: set[int] | None = None,
+        viewpoint_min_clearance: float = 0.05,
+        physics_client_id: int = 0,
     ):
         self.robot = robot
         self.camera_intrinsics = camera_intrinsics
@@ -215,8 +219,12 @@ class NBVPlanner:
         self.n_viewpoint_samples = n_viewpoint_samples
         self.radius_range = radius_range
         self.elevation_range = elevation_range
+        self.elevation_top_bias = elevation_top_bias
         self.max_range = max_range
         self.ray_stride = ray_stride
+        self.object_ids = object_ids
+        self.viewpoint_min_clearance = viewpoint_min_clearance
+        self.physics_client_id = physics_client_id
 
     def plan(
         self,
@@ -241,11 +249,17 @@ class NBVPlanner:
             radius_range=self.radius_range,
             n_samples=self.n_viewpoint_samples,
             elevation_range=self.elevation_range,
+            elevation_top_bias=self.elevation_top_bias,
             seed=seed,
         )
 
         reachable = filter_reachable_viewpoints(
-            candidate_poses, self.robot, self.camera_to_ee_transform
+            candidate_poses,
+            self.robot,
+            self.camera_to_ee_transform,
+            object_ids=self.object_ids,
+            min_clearance=self.viewpoint_min_clearance,
+            physics_client_id=self.physics_client_id,
         )
         if len(reachable) == 0:
             return None

@@ -112,16 +112,24 @@ def _sample_on_table_pose(
     table_aabb = p.getAABB(table_id, physicsClientId=physics_client_id)
     table_top_z = float(table_aabb[1][2])
     obj_aabb = p.getAABB(obj_id, physicsClientId=physics_client_id)
-    obj_half_z = float((obj_aabb[1][2] - obj_aabb[0][2]) / 2.0)
-    z = table_top_z + obj_half_z
+    origin_pos, origin_quat = p.getBasePositionAndOrientation(
+        obj_id, physicsClientId=physics_client_id
+    )
+    z = table_top_z + (float(origin_pos[2]) - float(obj_aabb[0][2]))
+    qx, qy, qz, qw = (
+        float(origin_quat[0]),
+        float(origin_quat[1]),
+        float(origin_quat[2]),
+        float(origin_quat[3]),
+    )
 
     if precomputed_surface_xy:
         vx, vy = precomputed_surface_xy[np.random.randint(len(precomputed_surface_xy))]
-        return (float(vx), float(vy), z, 0.0, 0.0, 0.0, 1.0)
+        return (float(vx), float(vy), z, qx, qy, qz, qw)
 
     x = float(np.random.uniform(table_aabb[0][0], table_aabb[1][0]))
     y = float(np.random.uniform(table_aabb[0][1], table_aabb[1][1]))
-    return (x, y, z, 0.0, 0.0, 0.0, 1.0)
+    return (x, y, z, qx, qy, qz, qw)
 
 
 def _best_yaw_equivalent(
@@ -166,6 +174,7 @@ def create_initial_belief(
         env.camera_intrinsics,
         camera_pose,
         pixel_noise_std=config.pixel_noise_std,
+        yaw_offsets=config.label_yaw_offset or None,
     )
 
     known_objects: set[str] = set(detections.keys())
@@ -228,11 +237,27 @@ def create_initial_belief(
 
         for label in known_objects:
             detected_pose, _ = detections[label]
-            object_poses[label] = (
+            base = (
                 cast(SE3Pose, detected_pose)
                 if i == 0
                 else add_pose_noise(detected_pose, pos_std=0.01, rot_std=0.0)
             )
+            if label in config.fixed_orientation_labels:
+                obj_id = label_to_id[label]
+                _, import_quat = p.getBasePositionAndOrientation(
+                    obj_id, physicsClientId=env.physics_client_id
+                )
+                object_poses[label] = (
+                    base[0],
+                    base[1],
+                    base[2],
+                    float(import_quat[0]),
+                    float(import_quat[1]),
+                    float(import_quat[2]),
+                    float(import_quat[3]),
+                )
+            else:
+                object_poses[label] = base
 
         for label in unknown_objects:
             obj_id = label_to_id[label]
@@ -337,16 +362,21 @@ def update_belief(
         camera_intrinsics,
         camera_pose,
         pixel_noise_std=config.pixel_noise_std,
+        yaw_offsets=config.label_yaw_offset or None,
     )
     detected_objects = set(detections.keys())
     occluded_objects: set[str] = set()
     visibility_status: dict[str, str] = {}
 
     previously_known = belief.known_objects | belief.occluded_objects
+    held_label = belief.held_object_label
 
     for label in label_to_id:
         if label in detected_objects:
             visibility_status[label] = "detected"
+            continue
+        if label == held_label:
+            visibility_status[label] = "held"
             continue
 
         if belief.visibility_grid is not None:
@@ -368,16 +398,16 @@ def update_belief(
 
     object_confidence = dict(belief.object_confidence)
     for label in label_to_id:
-        conf = object_confidence.get(label, 0.0)
+        conf_before = object_confidence.get(label, 0.0)
         status = visibility_status.get(label, "never_seen")
         if status in ["detected", "held"]:
             conf = 1.0
         elif status == "occluded":
-            conf *= config.occluded_decay
+            conf = conf_before * config.occluded_decay
         elif status == "visible_missing":
-            conf *= config.visible_missing_decay
+            conf = conf_before * config.visible_missing_decay
         else:
-            conf *= config.never_seen_decay
+            conf = conf_before * config.never_seen_decay
         object_confidence[label] = float(conf)
 
     known_objects = {
@@ -400,12 +430,26 @@ def update_belief(
         new_object_poses = dict(particle.object_poses)
 
         for label, (detected_pose, _) in detections.items():
+            fixed_orient = label in config.fixed_orientation_labels
             if label in belief.unknown_objects:
-                new_object_poses[label] = (
+                base = (
                     cast(SE3Pose, detected_pose)
                     if particle_index == 0
                     else add_pose_noise(detected_pose, pos_std=pos_std, rot_std=rot_std)
                 )
+                existing = new_object_poses.get(label)
+                if fixed_orient and existing is not None:
+                    new_object_poses[label] = (
+                        base[0],
+                        base[1],
+                        base[2],
+                        existing[3],
+                        existing[4],
+                        existing[5],
+                        existing[6],
+                    )
+                else:
+                    new_object_poses[label] = base
             else:
                 particle_pose = new_object_poses[label]
                 dist = pose_distance(particle_pose, detected_pose)
@@ -423,7 +467,19 @@ def update_belief(
                 equiv_pose = _best_yaw_equivalent(
                     particle_pose, detected_pose, config.get_n_fold(label)
                 )
-                new_object_poses[label] = blend_poses(particle_pose, equiv_pose, alpha)
+                blended = blend_poses(particle_pose, equiv_pose, alpha)
+                if fixed_orient:
+                    new_object_poses[label] = (
+                        blended[0],
+                        blended[1],
+                        blended[2],
+                        particle_pose[3],
+                        particle_pose[4],
+                        particle_pose[5],
+                        particle_pose[6],
+                    )
+                else:
+                    new_object_poses[label] = blended
 
         for label in occluded_objects:
             likelihood *= config.occluded_likelihood

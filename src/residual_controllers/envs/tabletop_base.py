@@ -520,7 +520,7 @@ class TabletopBaseEnv(gym.Env, ABC):
         if self.render_mode == "rgb_array_external":
             return capture_image(
                 self.physics_client_id,
-                camera_distance=0.9,
+                camera_distance=0.7,
                 camera_yaw=90,
                 camera_pitch=-25,
                 camera_target=(0.5, 0.0, 0.15),
